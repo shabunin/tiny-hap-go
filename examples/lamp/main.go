@@ -1,0 +1,62 @@
+// Lamp is a dimmable lightbulb accessory, announced with mDNS.
+// Pair it from Home app or hkontroller with setup code 031-45-154.
+package main
+
+import (
+	"flag"
+	"log"
+	"net"
+
+	"github.com/shabunin/tiny-hap-go/accessory"
+	"github.com/shabunin/tiny-hap-go/advertise/dnssd"
+)
+
+func main() {
+	store := flag.String("store", "./lamp-store", "directory for keys and pairings")
+	addr := flag.String("addr", ":0", "address to listen on")
+	pin := flag.String("pin", "031-45-154", "setup code")
+	debug := flag.Bool("debug", false, "print debug log")
+	flag.Parse()
+	if *debug {
+		accessory.SetLogger(log.Printf)
+	}
+
+	on := accessory.NewOn()
+	on.OnWrite = func(v any) error {
+		log.Println("on:", v)
+		return nil
+	}
+	brightness := accessory.NewBrightness()
+	brightness.OnWrite = func(v any) error {
+		log.Println("brightness:", v)
+		return nil
+	}
+	lamp := &accessory.Accessory{Services: []*accessory.Service{
+		accessory.NewInfoService(accessory.Info{
+			Name:         "Tiny Lamp",
+			Manufacturer: "tiny-hap-go",
+			Model:        "lamp",
+			SerialNumber: "0001",
+			Firmware:     "0.1.0",
+		}),
+		accessory.NewProtocolInfoService(),
+		accessory.NewService(accessory.ServiceLightbulb, accessory.NewName("Tiny Lamp"), on, brightness),
+	}}
+
+	srv, err := accessory.NewServer(accessory.Config{
+		Pin:        *pin,
+		Category:   accessory.CategoryLightbulb,
+		Store:      accessory.NewFsStore(*store),
+		Advertiser: dnssd.New(),
+		OnIdentify: func() { log.Println("identify") },
+	}, lamp)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Printf("accessory %s on %s, paired: %v, setup code %s", srv.ID(), ln.Addr(), srv.IsPaired(), *pin)
+	log.Fatal(srv.Serve(ln))
+}

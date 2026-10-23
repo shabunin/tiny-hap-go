@@ -1,0 +1,55 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # minimal version from go.mod and the latest release
+        go: [go.mod, stable]
+    name: test (go ${{ matrix.go }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go != 'go.mod' && matrix.go || '' }}
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
+      - name: gofmt
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "not formatted:"
+            echo "$files"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      # fails only if vulnerable code is actually called. Standard library is checked
+      # as of latest release, older patch releases of minimal version have fixed issues
+      - if: matrix.go == 'stable'
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  tinygo:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [pico2-w, pico-w, esp32s3-generic]
+    name: tinygo (${{ matrix.target }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: acifani/setup-tinygo@v3
+        with:
+          tinygo-version: '0.42.0'
+          install-binaryen: 'false'
+      - name: build accessory example
+        run: tinygo build -size short -o /dev/null -target=${{ matrix.target }} ./examples/tinylamp
