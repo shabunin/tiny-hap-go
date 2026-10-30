@@ -2,6 +2,7 @@
 package hapcrypto
 
 import (
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha512"
 	"errors"
@@ -15,6 +16,20 @@ import (
 // TagSize is the size of authentication tag appended to sealed data.
 const TagSize = chacha20poly1305.Overhead
 
+// Cipher seals and opens messages with one ChaCha20-Poly1305 key.
+type Cipher struct {
+	aead cipher.AEAD
+}
+
+// NewCipher returns cipher of key.
+func NewCipher(key [32]byte) Cipher {
+	aead, err := chacha20poly1305.New(key[:])
+	if err != nil {
+		panic(err) // key size is fixed
+	}
+	return Cipher{aead}
+}
+
 // nonce12 puts 8 byte nonce, e.g. "PS-Msg05" or counter, after 4 zero bytes.
 func nonce12(nonce []byte) []byte {
 	var n [chacha20poly1305.NonceSize]byte
@@ -23,26 +38,30 @@ func nonce12(nonce []byte) []byte {
 }
 
 // Seal encrypts plain, appends it with tag to dst.
-func Seal(dst []byte, key [32]byte, nonce, plain, aad []byte) []byte {
-	aead, err := chacha20poly1305.New(key[:])
-	if err != nil {
-		panic(err) // key size is fixed
-	}
-	return aead.Seal(dst, nonce12(nonce), plain, aad)
+// plain[:0] as dst encrypts in place.
+func (c Cipher) Seal(dst, nonce, plain, aad []byte) []byte {
+	return c.aead.Seal(dst, nonce12(nonce), plain, aad)
 }
 
 var errShort = errors.New("hapcrypto: sealed data too short")
 
-// Open decrypts sealed data with tag at its end.
-func Open(key [32]byte, nonce, sealed, aad []byte) ([]byte, error) {
+// Open decrypts sealed data with tag at its end, appends it to dst.
+// sealed[:0] as dst decrypts in place.
+func (c Cipher) Open(dst, nonce, sealed, aad []byte) ([]byte, error) {
 	if len(sealed) < TagSize {
 		return nil, errShort
 	}
-	aead, err := chacha20poly1305.New(key[:])
-	if err != nil {
-		panic(err)
-	}
-	return aead.Open(nil, nonce12(nonce), sealed, aad)
+	return c.aead.Open(dst, nonce12(nonce), sealed, aad)
+}
+
+// Seal encrypts plain with key, appends it with tag to dst.
+func Seal(dst []byte, key [32]byte, nonce, plain, aad []byte) []byte {
+	return NewCipher(key).Seal(dst, nonce, plain, aad)
+}
+
+// Open decrypts sealed data with tag at its end.
+func Open(key [32]byte, nonce, sealed, aad []byte) ([]byte, error) {
+	return NewCipher(key).Open(nil, nonce, sealed, aad)
 }
 
 // HKDF derives 32 byte key with HKDF-SHA512.

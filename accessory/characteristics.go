@@ -238,13 +238,13 @@ func (s *Server) notify(ch *Characteristic, v any, except *conn) {
 	w.key("value")
 	w.value(v)
 	w.raw("}]}")
-	ev := (&response{status: 200, contentType: contentJSON, body: w.b}).bytes()
+	hdr := (&response{status: 200, contentType: contentJSON, body: w.b}).header()
 	// response line of event has its own protocol name
-	ev = append([]byte("EVENT/1.0"), ev[len("HTTP/1.1"):]...)
+	hdr = append([]byte("EVENT/1.0"), hdr[len("HTTP/1.1"):]...)
 
 	for _, c := range s.connsOf("") {
 		if c != except && c.subscribed(ch) {
-			if err := c.write(ev); err != nil {
+			if err := c.write(hdr, w.b); err != nil {
 				logf("event to %s: %v", c.nc.RemoteAddr(), err)
 			}
 		}

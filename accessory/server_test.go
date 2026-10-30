@@ -456,6 +456,17 @@ func TestMaxConns(t *testing.T) {
 	cs[2].expectClosed()
 }
 
+func TestMinFreeHeap(t *testing.T) {
+	l := newTestLamp()
+	srv, err := NewServer(Config{Pin: "031-45-154", MinFreeHeap: 1 << 50}, l.acc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newTestController(t, "c")
+	c.connect(serve(t, srv))
+	c.expectClosed()
+}
+
 func TestCheckPin(t *testing.T) {
 	for pin, ok := range map[string]bool{
 		"031-45-154": true,

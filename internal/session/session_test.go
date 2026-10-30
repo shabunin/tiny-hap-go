@@ -30,6 +30,24 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// Write sends the same frames as Seal, however message is split into parts.
+func TestWrite(t *testing.T) {
+	var shared [32]byte
+	for _, size := range []int{0, 5, MaxFrame, MaxFrame + 1, 3*MaxFrame + 5} {
+		msg := bytes.Repeat([]byte{byte(size)}, size)
+		want := NewAccessory(shared).Seal(nil, msg)
+		for _, cut := range []int{0, min(1, size), size / 2, size} {
+			var got bytes.Buffer
+			if err := NewAccessory(shared).Write(&got, msg[:cut], nil, msg[cut:]); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got.Bytes(), want) {
+				t.Fatalf("size %d cut at %d: frames differ from Seal", size, cut)
+			}
+		}
+	}
+}
+
 func TestWrongDirection(t *testing.T) {
 	var shared [32]byte
 	acc := NewAccessory(shared)

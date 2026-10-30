@@ -15,7 +15,9 @@ import (
 
 const hostname = "cardputer"
 
-var wifi espnet.Esplink
+// The Wi-Fi blob uses about 32 KB of its pool, and a lamp needs no long receive queue:
+// smaller ones than the defaults of 48 KB and 16 frames leave 20 KB more heap.
+var wifi = espnet.Esplink{ArenaPoolSize: 40 * 1024, RxRingSize: 8}
 
 func connectWiFi(con *console) netip.Addr {
 	netdev.UseNetdev(&wifi)

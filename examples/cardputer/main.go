@@ -9,7 +9,9 @@
 package main
 
 import (
+	"fmt"
 	"net"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -25,12 +27,15 @@ var (
 const (
 	pin  = "031-45-154"
 	port = 51826
+
+	minFreeHeap = 12 * 1024
 )
 
 func main() {
 	con := newConsole(openDisplay())
 	con.status("tiny-hap-go  cardputer", cyan)
 
+	// Without ssid, TinyGo drops everything below as dead code: measure size with it.
 	if ssid == "" {
 		con.print("built without -X main.ssid", red)
 		select {}
@@ -39,7 +44,7 @@ func main() {
 	ip := connectWiFi(con)
 	con.print("wifi: "+ip.String(), green)
 
-	accessory.SetLogger(func(format string, args ...any) { println(format) })
+	accessory.SetLogger(func(format string, args ...any) { println(fmt.Sprintf(format, args...)) })
 
 	// Writes come from connection goroutines, the screen is drawn here only.
 	changed := make(chan struct{}, 1)
@@ -77,11 +82,13 @@ func main() {
 	}}
 
 	srv, err := accessory.NewServer(accessory.Config{
-		Pin:        pin,
-		Category:   accessory.CategoryLightbulb,
-		MaxConns:   3,
-		Advertiser: newAdvertiser(ip),
-		OnIdentify: func() { onWrite(nil) },
+		Pin:      pin,
+		Category: accessory.CategoryLightbulb,
+		MaxConns: 4,
+		// Wi-Fi takes half of the heap, leave room for requests of open connections.
+		MinFreeHeap: minFreeHeap,
+		Advertiser:  newAdvertiser(ip),
+		OnIdentify:  func() { onWrite(nil) },
 	}, lamp)
 	if err != nil {
 		con.print(err.Error(), red)
@@ -102,16 +109,16 @@ func main() {
 		con.print("serve: "+err.Error(), red)
 	}()
 
-	paired := !srv.IsPaired()
+	var status string
 	ticker := time.NewTicker(time.Second)
 	for {
-		if paired != srv.IsPaired() {
-			paired = srv.IsPaired()
-			if paired {
-				con.status(ip.String()+"  paired", green)
-			} else {
-				con.status(ip.String()+"  not paired", yellow)
-			}
+		state, c := "not paired", yellow
+		if srv.IsPaired() {
+			state, c = "paired", green
+		}
+		if s := ip.String() + " " + state + " " + strconv.Itoa(int(freeHeap()/1024)) + "K free"; s != status {
+			status = s
+			con.status(status, c)
 		}
 		con.lamp(on.Value().(bool), brightness.Value().(int64),
 			hue.Value().(float64), saturation.Value().(float64))
@@ -121,4 +128,12 @@ func main() {
 		case <-ticker.C:
 		}
 	}
+}
+
+// freeHeap returns heap free after garbage collection.
+func freeHeap() uint64 {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.HeapSys - m.HeapInuse
 }

@@ -74,7 +74,10 @@ where pairing, loading accessories, reads, writes, events and unpairing work,
 
 Heap: about 40 KB. Goroutine stacks: one per connection and two more,
 8 KB each on ESP32, set `-stack-size=8KB` on RP2040 and RP2350.
-Wi-Fi driver and its network stack come on top.
+`Serve` starts the goroutines of all `MaxConns` connections at once, so that their
+stacks are allocated before the heap gets fragmented.
+Wi-Fi driver and its network stack come on top: on the Cardputer they take about
+100 KB of its 244 KB heap, see [examples/cardputer](examples/cardputer).
 
 ## Design
 
@@ -84,6 +87,8 @@ Wi-Fi driver and its network stack come on top.
 - mDNS is an `Advertiser` interface, `advertise/dnssd` for systems with full network stack,
   `advertise/mdns` is a small responder for boards, e.g. with lneto network stack of espradio
 - storage is a `Store` interface: files, memory, or your board's flash
+- small heap: requests are handled one at a time, encrypted responses are written
+  frame by frame, `MinFreeHeap` refuses connections when heap runs low
 
 ## Credits
 

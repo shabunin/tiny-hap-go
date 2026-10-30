@@ -13,6 +13,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,8 +35,12 @@ type Config struct {
 	Store Store
 	// Advertiser announces accessory with mDNS, nothing is announced if nil.
 	Advertiser Advertiser
-	// MaxConns limits connections, 8 if zero.
+	// MaxConns limits connections, 8 if zero. A goroutine for each is started by Serve.
 	MaxConns int
+	// MinFreeHeap refuses new connections while less heap is free after
+	// garbage collection, so that a board with fixed heap, e.g. with TinyGo,
+	// does not run out of memory. Zero disables the check.
+	MinFreeHeap int
 	// OnIdentify is called when controller asks accessory to identify itself,
 	// e.g. to blink.
 	OnIdentify func()
@@ -54,6 +59,8 @@ type Server struct {
 	id   string // accessory pairing id, e.g. "4A:B2:..."
 	ltsk ed25519.PrivateKey
 	ltpk ed25519.PublicKey
+
+	handling sync.Mutex // held while request is handled
 
 	mu         sync.Mutex
 	pairings   []pairing
@@ -331,6 +338,16 @@ func (s *Server) Serve(ln net.Listener) error {
 	s.mu.Unlock()
 	s.advertise()
 
+	// Connections are served by MaxConns goroutines started here: on a board
+	// their stacks are allocated before the heap gets fragmented, and reused.
+	idle := make(chan chan net.Conn, s.cfg.MaxConns)
+	for range s.cfg.MaxConns {
+		ch := make(chan net.Conn)
+		idle <- ch
+		go s.work(ch, idle)
+		defer close(ch)
+	}
+
 	for {
 		nc, err := ln.Accept()
 		if err != nil {
@@ -342,17 +359,47 @@ func (s *Server) Serve(ln net.Listener) error {
 			}
 			return err
 		}
-		c := newConn(s, nc)
-		s.mu.Lock()
-		if s.closed || len(s.conns) >= s.cfg.MaxConns {
-			s.mu.Unlock()
-			nc.Close()
-			continue
+		if s.cfg.MinFreeHeap > 0 {
+			if free := freeHeap(); free < s.cfg.MinFreeHeap {
+				logf("%s: refused, %d bytes of heap free", nc.RemoteAddr(), free)
+				nc.Close()
+				continue
+			}
 		}
-		s.conns[c] = struct{}{}
-		s.mu.Unlock()
-		go c.serve()
+		select {
+		case ch := <-idle:
+			ch <- nc
+		default:
+			logf("%s: refused, %d connections", nc.RemoteAddr(), s.cfg.MaxConns)
+			nc.Close()
+		}
 	}
+}
+
+// work serves connections received on ch, then waits on idle for the next one.
+func (s *Server) work(ch chan net.Conn, idle chan<- chan net.Conn) {
+	for nc := range ch {
+		s.serveConn(nc)
+		idle <- ch
+	}
+}
+
+// serveConn serves connection until it is closed. It is a function of its own, so
+// that nothing of the connection stays on stack of waiting goroutine for
+// conservative garbage collector of TinyGo.
+func (s *Server) serveConn(nc net.Conn) {
+	c := newConn(s, nc)
+	s.mu.Lock()
+	closed := s.closed
+	if !closed {
+		s.conns[c] = struct{}{}
+	}
+	s.mu.Unlock()
+	if closed {
+		nc.Close()
+		return
+	}
+	c.serve()
 }
 
 // Close stops listener and closes connections.
@@ -373,6 +420,14 @@ func (s *Server) Close() error {
 		c.close()
 	}
 	return err
+}
+
+// freeHeap returns bytes of heap free after garbage collection.
+func freeHeap() int {
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return int(m.HeapSys - m.HeapInuse)
 }
 
 func (s *Server) removeConn(c *conn) {
@@ -487,8 +542,12 @@ func (c *conn) serve() {
 			}
 			return
 		}
+		// One request at a time: on a board the heap fits only one pair-verify
+		// or accessory database, and a single core gains nothing from more.
+		c.srv.handling.Lock()
 		res := c.handle(req)
-		if err := c.write(res.bytes()); err != nil {
+		c.srv.handling.Unlock()
+		if err := c.write(res.header(), res.body); err != nil {
 			logf("%s: write: %v", c.nc.RemoteAddr(), err)
 			return
 		}
@@ -601,16 +660,16 @@ var statusText = map[int]string{
 	503: "Service Unavailable",
 }
 
-func (r *response) bytes() []byte {
-	b := make([]byte, 0, 96+len(r.body))
+// header returns status line and headers, body is written after them.
+func (r *response) header() []byte {
+	b := make([]byte, 0, 96)
 	b = fmt.Appendf(b, "HTTP/1.1 %d %s\r\n", r.status, statusText[r.status])
 	if r.contentType != "" {
 		b = append(b, "Content-Type: "...)
 		b = append(b, r.contentType...)
 		b = append(b, "\r\n"...)
 	}
-	b = fmt.Appendf(b, "Content-Length: %d\r\n\r\n", len(r.body))
-	return append(b, r.body...)
+	return fmt.Appendf(b, "Content-Length: %d\r\n\r\n", len(r.body))
 }
 
 func tlvResponse(b []byte) *response {
@@ -622,15 +681,22 @@ func statusResponse(status, hapStatus int) *response {
 		body: fmt.Appendf(nil, `{"status":%d}`, hapStatus)}
 }
 
-// write sends data, encrypted once connection is verified.
-func (c *conn) write(b []byte) error {
+// write sends parts of message, encrypted once connection is verified.
+// Encrypted message is sealed and written frame by frame, without copy of it.
+func (c *conn) write(parts ...[]byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
-	if c.sess != nil {
-		b = c.sess.Seal(nil, b)
-	}
 	c.nc.SetWriteDeadline(time.Now().Add(writeTimeout))
-	_, err := c.nc.Write(b)
+	var err error
+	if c.sess != nil {
+		err = c.sess.Write(c.nc, parts...)
+	} else {
+		for _, p := range parts {
+			if _, err = c.nc.Write(p); err != nil {
+				break
+			}
+		}
+	}
 	if err != nil {
 		c.close()
 	}

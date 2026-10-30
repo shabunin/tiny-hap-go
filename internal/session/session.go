@@ -15,9 +15,9 @@ import (
 // MaxFrame is the max plain length of a frame.
 const MaxFrame = 1024
 
-// Session holds keys and counters of both directions.
+// Session holds ciphers and counters of both directions.
 type Session struct {
-	encKey, decKey [32]byte
+	enc, dec hapcrypto.Cipher
 
 	emu      sync.Mutex
 	encCount uint64
@@ -28,17 +28,27 @@ type Session struct {
 // NewAccessory returns session of accessory side for shared secret of pair-verify.
 func NewAccessory(shared [32]byte) *Session {
 	return &Session{
-		encKey: hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Read-Encryption-Key"),
-		decKey: hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Write-Encryption-Key"),
+		enc: hapcrypto.NewCipher(hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Read-Encryption-Key")),
+		dec: hapcrypto.NewCipher(hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Write-Encryption-Key")),
 	}
 }
 
 // NewController returns session of controller side.
 func NewController(shared [32]byte) *Session {
 	return &Session{
-		encKey: hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Write-Encryption-Key"),
-		decKey: hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Read-Encryption-Key"),
+		enc: hapcrypto.NewCipher(hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Write-Encryption-Key")),
+		dec: hapcrypto.NewCipher(hapcrypto.HKDF(shared[:], "Control-Salt", "Control-Read-Encryption-Key")),
 	}
+}
+
+// sealFrame encrypts frame in place: its 2 byte length, plain data and room for tag.
+func (s *Session) sealFrame(frame []byte) {
+	n := len(frame) - 2 - hapcrypto.TagSize
+	binary.LittleEndian.PutUint16(frame, uint16(n))
+	var nonce [8]byte
+	binary.LittleEndian.PutUint64(nonce[:], s.encCount)
+	s.encCount++
+	s.enc.Seal(frame[2:2], nonce[:], frame[2:2+n], frame[:2])
 }
 
 // Seal splits plain into frames and appends them to dst.
@@ -48,16 +58,47 @@ func (s *Session) Seal(dst, plain []byte) []byte {
 	defer s.emu.Unlock()
 	for {
 		n := min(len(plain), MaxFrame)
-		var hdr [2]byte
-		binary.LittleEndian.PutUint16(hdr[:], uint16(n))
-		var nonce [8]byte
-		binary.LittleEndian.PutUint64(nonce[:], s.encCount)
-		s.encCount++
-		dst = append(dst, hdr[:]...)
-		dst = hapcrypto.Seal(dst, s.encKey, nonce[:], plain[:n], hdr[:])
+		start := len(dst)
+		dst = append(dst, 0, 0)
+		dst = append(dst, plain[:n]...)
+		var tag [hapcrypto.TagSize]byte
+		dst = append(dst, tag[:]...)
+		s.sealFrame(dst[start:])
 		plain = plain[n:]
 		if len(plain) == 0 {
 			return dst
+		}
+	}
+}
+
+// Write seals parts as one message and writes it to w frame by frame,
+// so that only one frame is held in memory.
+func (s *Session) Write(w io.Writer, parts ...[]byte) error {
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	buf := make([]byte, 2+min(total, MaxFrame)+hapcrypto.TagSize)
+	s.emu.Lock()
+	defer s.emu.Unlock()
+	for {
+		n := min(total, MaxFrame)
+		for filled := 0; filled < n; {
+			k := copy(buf[2+filled:2+n], parts[0])
+			parts[0] = parts[0][k:]
+			if len(parts[0]) == 0 {
+				parts = parts[1:]
+			}
+			filled += k
+		}
+		frame := buf[:2+n+hapcrypto.TagSize]
+		s.sealFrame(frame)
+		if _, err := w.Write(frame); err != nil {
+			return err
+		}
+		total -= n
+		if total == 0 {
+			return nil
 		}
 	}
 }
@@ -108,7 +149,7 @@ func (rd *Reader) next() error {
 	var nonce [8]byte
 	binary.LittleEndian.PutUint64(nonce[:], rd.s.decCount)
 	rd.s.decCount++
-	plain, err := hapcrypto.Open(rd.s.decKey, nonce[:], frame, hdr[:])
+	plain, err := rd.s.dec.Open(frame[:0], nonce[:], frame, hdr[:])
 	if err != nil {
 		return err
 	}
