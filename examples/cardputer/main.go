@@ -10,7 +10,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"runtime"
 	"strconv"
 	"time"
@@ -28,6 +27,7 @@ const (
 	pin  = "031-45-154"
 	port = 51826
 
+	maxConns    = 4
 	minFreeHeap = 12 * 1024
 )
 
@@ -84,7 +84,7 @@ func main() {
 	srv, err := accessory.NewServer(accessory.Config{
 		Pin:      pin,
 		Category: accessory.CategoryLightbulb,
-		MaxConns: 4,
+		MaxConns: maxConns,
 		// Wi-Fi takes half of the heap, leave room for requests of open connections.
 		MinFreeHeap: minFreeHeap,
 		Advertiser:  newAdvertiser(ip),
@@ -95,8 +95,7 @@ func main() {
 		select {}
 	}
 
-	// The stack of espradio does not accept connections to a listener on 0.0.0.0.
-	ln, err := net.Listen("tcp", ip.String()+":"+strconv.Itoa(port))
+	ln, err := listen(ip, port)
 	if err != nil {
 		con.print("listen: "+err.Error(), red)
 		select {}

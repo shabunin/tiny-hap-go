@@ -15,8 +15,9 @@ pair setup and verify, encrypted sessions, accessories, reading and writing
 characteristics, events, adding and removing controllers.
 Tested with [hkontroller](https://github.com/shabunin/hkontroller).
 
-Works on M5Stack Cardputer (ESP32-S3) over Wi-Fi with TinyGo 0.44:
-pairs and works with hkontroller. Pairings are not kept in flash yet.
+Works on M5Stack Cardputer (ESP32-S3) over Wi-Fi with TinyGo 0.44, with hkontroller
+and aiohomekit of Home Assistant: 20 minutes of three controller connections, one of
+them reconnecting all the time, without errors. Pairings are not kept in flash yet.
 
 ## Example
 
