@@ -10,11 +10,13 @@ package main
 
 import (
 	"fmt"
+	"machine"
 	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/shabunin/tiny-hap-go/accessory"
+	"github.com/shabunin/tiny-hap-go/flashstore"
 )
 
 // Set at build time: -ldflags "-X main.ssid=... -X main.password=...".
@@ -81,7 +83,15 @@ func main() {
 			on, brightness, hue, saturation),
 	}}
 
+	// The last two sectors before 4 MB: the address stays when the program grows.
+	store, err := flashstore.New(machine.Flash, machine.Flash.Size()-flashstore.Size(machine.Flash))
+	if err != nil {
+		con.print("flash: "+err.Error(), red)
+		select {}
+	}
+
 	srv, err := accessory.NewServer(accessory.Config{
+		Store:    store,
 		Pin:      pin,
 		Category: accessory.CategoryLightbulb,
 		MaxConns: maxConns,

@@ -17,7 +17,8 @@ Tested with [hkontroller](https://github.com/shabunin/hkontroller).
 
 Works on M5Stack Cardputer (ESP32-S3) over Wi-Fi with TinyGo 0.44, with hkontroller
 and aiohomekit of Home Assistant: 20 minutes of three controller connections, one of
-them reconnecting all the time, without errors. Pairings are not kept in flash yet.
+them reconnecting all the time, without errors. Pairings are kept in flash and survive
+resets and reflashing.
 
 ## Example
 
@@ -60,6 +61,12 @@ cd examples/cardputer
 tinygo flash -target=m5stamp-s3a -ldflags "-X main.ssid=SSID -X main.password=PASSWORD" .
 ```
 
+It keeps id, keys and pairings in the two flash sectors below 4 MB. To forget them:
+
+```sh
+esptool --port /dev/ttyACM0 erase-region 0x3FE000 0x2000
+```
+
 ## Size
 
 TinyGo 0.42 builds of `examples/tinylamp`. Heap is measured: smallest heap limit
@@ -87,7 +94,8 @@ Wi-Fi driver and its network stack come on top: on the Cardputer they take about
 - accessory JSON is written by hand, only write requests are parsed with `encoding/json`
 - mDNS is an `Advertiser` interface, `advertise/dnssd` for systems with full network stack,
   `advertise/mdns` is a small responder for boards, e.g. with lneto network stack of espradio
-- storage is a `Store` interface: files, memory, or your board's flash
+- storage is a `Store` interface: files, memory, or flash with `flashstore`, which appends
+  records with checksums to one of two erase blocks and is safe against power loss
 - small heap: requests are handled one at a time, encrypted responses are written
   frame by frame, `MinFreeHeap` refuses connections when heap runs low
 
