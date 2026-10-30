@@ -15,8 +15,8 @@ pair setup and verify, encrypted sessions, accessories, reading and writing
 characteristics, events, adding and removing controllers.
 Tested with [hkontroller](https://github.com/shabunin/hkontroller).
 
-Boards are not done yet: they need Wi-Fi setup, an mDNS responder of their
-network stack and a flash `Store`.
+Works on M5Stack Cardputer (ESP32-S3) over Wi-Fi with TinyGo 0.44:
+pairs and works with hkontroller. Pairings are not kept in flash yet.
 
 ## Example
 
@@ -51,6 +51,14 @@ go run ./examples/lamp -debug
 
 [examples/tinylamp](examples/tinylamp) is the same lamp for TinyGo, without mDNS and files.
 
+[examples/cardputer](examples/cardputer) makes M5Stack Cardputer a color lamp shown on its screen,
+over Wi-Fi with [espradio](https://github.com/tinygo-org/espradio):
+
+```sh
+cd examples/cardputer
+tinygo flash -target=m5stamp-s3a -ldflags "-X main.ssid=SSID -X main.password=PASSWORD" .
+```
+
 ## Size
 
 TinyGo 0.42 builds of `examples/tinylamp`. Heap is measured: smallest heap limit
@@ -73,7 +81,8 @@ Wi-Fi driver and its network stack come on top.
 - no `net/http`: own small HTTP/1.1 parser for the few requests of HAP
 - no reflection in pairing: TLV8 items are read and written directly
 - accessory JSON is written by hand, only write requests are parsed with `encoding/json`
-- mDNS is an `Advertiser` interface, `advertise/dnssd` for systems with full network stack
+- mDNS is an `Advertiser` interface, `advertise/dnssd` for systems with full network stack,
+  `advertise/mdns` is a small responder for boards, e.g. with lneto network stack of espradio
 - storage is a `Store` interface: files, memory, or your board's flash
 
 ## Credits
