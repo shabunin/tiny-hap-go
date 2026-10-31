@@ -251,7 +251,7 @@ func (c *conn) pairSetupM5(items tlv.Items) *response {
 	sig, _ := sub.Get(tlv.Signature)
 	ctrlX := hapcrypto.HKDF(setup.key, "Pair-Setup-Controller-Sign-Salt", "Pair-Setup-Controller-Sign-Info")
 	info := append(append(ctrlX[:], id...), ltpk...)
-	if len(id) == 0 || len(ltpk) != ed25519.PublicKeySize || !ed25519.Verify(ltpk, info, sig) {
+	if len(id) == 0 || len(ltpk) != ed25519.PublicKeySize || !hapcrypto.Verify(ltpk, info, sig) {
 		return c.failSetup(6, tlv.ErrAuthentication, false)
 	}
 
@@ -372,7 +372,7 @@ func (c *conn) pairVerifyM3(items tlv.Items) *response {
 	}
 	s.mu.Unlock()
 	info := append(append(v.ctrlPub[:], id...), v.accPub[:]...)
-	if i < 0 || !ed25519.Verify(p.ltpk, info, sig) {
+	if i < 0 || !hapcrypto.Verify(p.ltpk, info, sig) {
 		return tlvError(4, tlv.ErrAuthentication)
 	}
 
