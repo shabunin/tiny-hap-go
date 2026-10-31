@@ -490,6 +490,7 @@ const (
 	maxBody      = 8 * 1024
 	maxHeaders   = 32
 	writeTimeout = 10 * time.Second
+	eventTimeout = time.Second
 )
 
 type conn struct {
@@ -510,6 +511,8 @@ type conn struct {
 	events map[*Characteristic]bool
 
 	verify *pairVerify // pair-verify in progress
+
+	changed []*Characteristic // written by request, notified after response
 }
 
 func newConn(s *Server, nc net.Conn, b *buffers) *conn {
@@ -587,6 +590,13 @@ func (c *conn) serve() {
 			logf("%s: write: %v", c.nc.RemoteAddr(), err)
 			return
 		}
+		// Events go after response and out of handling: a controller that does
+		// not read them holds up only this connection, for eventTimeout at most.
+		for i, ch := range c.changed {
+			c.srv.notify(ch, c)
+			c.changed[i] = nil
+		}
+		c.changed = c.changed[:0]
 		if res.after != nil && !res.after() {
 			return
 		}
@@ -722,10 +732,15 @@ func statusResponse(status, hapStatus int) *response {
 func (c *conn) write(parts ...[]byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	return c.writeLocked(writeTimeout, parts...)
+}
+
+// writeLocked is write with c.wmu held, closing connection if it takes longer than timeout.
+func (c *conn) writeLocked(timeout time.Duration, parts ...[]byte) error {
 	if c.done {
 		return net.ErrClosed
 	}
-	c.nc.SetWriteDeadline(time.Now().Add(writeTimeout))
+	c.nc.SetWriteDeadline(time.Now().Add(timeout))
 	var err error
 	if c.sess != nil {
 		err = c.sess.Write(c.nc, c.buf.out, parts...)

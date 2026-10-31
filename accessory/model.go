@@ -119,13 +119,14 @@ func (c *Characteristic) Value() any {
 }
 
 // SetValue changes value and sends it to subscribed controllers if it changed.
+// A controller that stopped reading holds it up for a second, then is disconnected.
 func (c *Characteristic) SetValue(v any) error {
 	nv, err := c.convert(v)
 	if err != nil {
 		return err
 	}
 	if c.store(nv) && c.srv != nil {
-		c.srv.notify(c, nv, nil)
+		c.srv.notify(c, nil)
 	}
 	return nil
 }

@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -503,6 +507,141 @@ func waitConns(t *testing.T, srv *Server, n int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("server still has other than %d connections", n)
+}
+
+// A controller that stopped reading holds up neither the one writing a value,
+// nor others, and is disconnected.
+func TestStalledSubscriber(t *testing.T) {
+	l := newTestLamp()
+	srv, err := NewServer(Config{Pin: "031-45-154"}, l.acc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln0, err := listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := &stallListener{Listener: ln0}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	addr := ln.Addr().String()
+
+	a := pairedClient(t, srv, addr, "a")
+	b := addPairing(t, srv, addr, a, "b", false)
+	c := addPairing(t, srv, addr, a, "c", false)
+	put(a, `{"characteristics":[{"aid":1,"iid":10,"ev":true}]}`)
+	ln.stall()
+
+	start := time.Now()
+	put(b, `{"characteristics":[{"aid":1,"iid":10,"value":true}]}`)
+	if d := time.Since(start); d > eventTimeout/2 {
+		t.Fatalf("write took %v", d)
+	}
+	start = time.Now()
+	if res := c2get(c, "1.10"); !strings.Contains(res, `"value":true`) {
+		t.Fatalf("read %s", res)
+	}
+	if d := time.Since(start); d > eventTimeout/2 {
+		t.Fatalf("read of other controller took %v", d)
+	}
+	a.expectClosed()
+	put(b, `{"characteristics":[{"aid":1,"iid":10,"value":false}]}`)
+}
+
+// Events of concurrent writes may come in any order, the last one has the value
+// characteristic ended with.
+func TestLastEventHasLastValue(t *testing.T) {
+	srv, addr, _ := testServer(t, nil)
+	sub := pairedClient(t, srv, addr, "sub")
+	put(sub, `{"characteristics":[{"aid":1,"iid":11,"ev":true}]}`)
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for k := range 2 {
+		w := addPairing(t, srv, addr, sub, "w"+strconv.Itoa(k), false)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 40 {
+				v := strconv.Itoa(2*i + k)
+				if _, err := w.do("PUT", "/characteristics", contentJSON,
+					[]byte(`{"characteristics":[{"aid":1,"iid":11,"value":`+v+`}]}`)); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var last string
+	for {
+		sub.nc.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if _, err := sub.rd.Peek(1); err != nil {
+			break
+		}
+		last = sub.waitEvent()
+	}
+	want := c2get(sub, "1.11")
+	v := want[strings.Index(want, `"value":`):]
+	if !strings.Contains(last, v[:strings.IndexAny(v, ",}")]) {
+		t.Fatalf("last event %s, value %s", last, want)
+	}
+}
+
+// stallListener holds writes to its first connection once stalled, until their
+// deadline, as to a controller that stopped reading.
+type stallListener struct {
+	net.Listener
+	mu    sync.Mutex
+	first *stallConn
+}
+
+func (l *stallListener) Accept() (net.Conn, error) {
+	nc, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	c := &stallConn{Conn: nc}
+	l.mu.Lock()
+	if l.first == nil {
+		l.first = c
+	}
+	l.mu.Unlock()
+	return c, nil
+}
+
+func (l *stallListener) stall() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.first.stalled.Store(true)
+}
+
+type stallConn struct {
+	net.Conn
+	stalled  atomic.Bool
+	mu       sync.Mutex
+	deadline time.Time
+}
+
+func (c *stallConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadline = t
+	c.mu.Unlock()
+	return c.Conn.SetWriteDeadline(t)
+}
+
+func (c *stallConn) Write(p []byte) (int, error) {
+	if c.stalled.Load() {
+		c.mu.Lock()
+		d := c.deadline
+		c.mu.Unlock()
+		time.Sleep(time.Until(d))
+		return 0, os.ErrDeadlineExceeded
+	}
+	return c.Conn.Write(p)
 }
 
 func TestMinFreeHeap(t *testing.T) {

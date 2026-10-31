@@ -2,6 +2,7 @@ package accessory
 
 import (
 	"encoding/json"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -220,15 +221,29 @@ func (c *conn) put(aid, iid uint64, raw json.RawMessage, ev *bool) int {
 			return statusCommunication
 		}
 	}
-	if ch.store(nv) {
-		c.srv.notify(ch, nv, c)
+	if ch.store(nv) && !slices.Contains(c.changed, ch) {
+		c.changed = append(c.changed, ch)
 	}
 	return statusSuccess
 }
 
-// notify sends new value to connections subscribed to it,
-// except the one that wrote it.
-func (s *Server) notify(ch *Characteristic, v any, except *conn) {
+// notify sends value of ch to connections subscribed to it, except the one
+// that wrote it.
+func (s *Server) notify(ch *Characteristic, except *conn) {
+	for _, c := range s.connsOf("") {
+		if c != except && c.subscribed(ch) {
+			if err := c.event(ch); err != nil {
+				logf("event to %s: %v", c.nc.RemoteAddr(), err)
+			}
+		}
+	}
+}
+
+// event sends current value of ch. It is read with write lock held, so that the
+// last event controller gets has the last value, whoever changed it.
+func (c *conn) event(ch *Characteristic) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	var w jsonWriter
 	w.raw(`{"characteristics":[{`)
 	w.key("aid")
@@ -236,17 +251,10 @@ func (s *Server) notify(ch *Characteristic, v any, except *conn) {
 	w.key("iid")
 	w.uint(ch.ID)
 	w.key("value")
-	w.value(v)
+	w.value(ch.Value())
 	w.raw("}]}")
 	hdr := (&response{status: 200, contentType: contentJSON, body: w.b}).header()
 	// response line of event has its own protocol name
 	hdr = append([]byte("EVENT/1.0"), hdr[len("HTTP/1.1"):]...)
-
-	for _, c := range s.connsOf("") {
-		if c != except && c.subscribed(ch) {
-			if err := c.write(hdr, w.b); err != nil {
-				logf("event to %s: %v", c.nc.RemoteAddr(), err)
-			}
-		}
-	}
+	return c.writeLocked(eventTimeout, hdr, w.b)
 }

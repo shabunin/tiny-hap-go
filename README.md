@@ -100,6 +100,9 @@ Wi-Fi driver and its network stack come on top: on the Cardputer they take about
   frame by frame, `MaxConns` goroutines with their buffers are made once and reused,
   so serving connections does not fragment the heap; `MinFreeHeap` refuses
   connections when heap runs low
+- events go out after the response to the write that caused them, with current
+  value and a 1 s timeout: a controller that stops reading is disconnected
+  without holding up the others
 
 ## Credits
 
