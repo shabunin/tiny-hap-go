@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shabunin/tiny-hap-go/tlv"
 )
@@ -454,6 +456,53 @@ func TestMaxConns(t *testing.T) {
 		}
 	}
 	cs[2].expectClosed()
+}
+
+// Connections served one after another by the same worker reuse its buffers,
+// while the other worker sends events.
+func TestReusedBuffers(t *testing.T) {
+	l := newTestLamp()
+	srv, err := NewServer(Config{Pin: "031-45-154", MaxConns: 2}, l.acc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := serve(t, srv)
+	a := pairedClient(t, srv, addr, "a")
+	b := addPairing(t, srv, addr, a, "b", false)
+	put(a, `{"characteristics":[{"aid":1,"iid":11,"ev":true}]}`)
+	want := string(b.mustDo("GET", "/accessories", "", nil).body)
+	for i := range 5 {
+		b.nc.Close()
+		waitConns(t, srv, 1)
+		b.connect(addr)
+		if err := b.pairVerify(srv.ltpk); err != nil {
+			t.Fatal(err)
+		}
+		v := strconv.Itoa(10 + i)
+		put(b, `{"characteristics":[{"aid":1,"iid":11,"value":`+v+`}]}`)
+		if ev := a.waitEvent(); ev != `{"characteristics":[{"aid":1,"iid":11,"value":`+v+`}]}` {
+			t.Fatalf("event %s", ev)
+		}
+		got := string(b.mustDo("GET", "/accessories", "", nil).body)
+		if got != strings.Replace(want, `"value":100`, `"value":`+v, 1) {
+			t.Fatalf("accessories %s", got)
+		}
+	}
+}
+
+// waitConns waits until server has n connections.
+func waitConns(t *testing.T, srv *Server, n int) {
+	t.Helper()
+	for range 100 {
+		srv.mu.Lock()
+		k := len(srv.conns)
+		srv.mu.Unlock()
+		if k == n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("server still has other than %d connections", n)
 }
 
 func TestMinFreeHeap(t *testing.T) {

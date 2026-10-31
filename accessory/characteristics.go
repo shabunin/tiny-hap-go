@@ -87,7 +87,7 @@ func (c *conn) getCharacteristics(query string) *response {
 		results[i] = r
 	}
 
-	var w jsonWriter
+	w := c.json()
 	w.raw(`{"characteristics":[`)
 	for _, r := range results {
 		w.comma()
@@ -120,7 +120,7 @@ func (c *conn) getCharacteristics(query string) *response {
 	if failed {
 		status = 207
 	}
-	return &response{status: status, contentType: contentJSON, body: w.b}
+	return c.jsonResponse(status, w)
 }
 
 type putRequest struct {
@@ -162,7 +162,7 @@ func (c *conn) putCharacteristics(body []byte) *response {
 		return &response{status: 204}
 	}
 
-	var w jsonWriter
+	w := c.json()
 	w.raw(`{"characteristics":[`)
 	for _, r := range results {
 		w.comma()
@@ -180,7 +180,7 @@ func (c *conn) putCharacteristics(body []byte) *response {
 		w.raw("}")
 	}
 	w.raw("]}")
-	return &response{status: 207, contentType: contentJSON, body: w.b}
+	return c.jsonResponse(207, w)
 }
 
 // put handles one entry of write request, returns HAP status.

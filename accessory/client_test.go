@@ -49,7 +49,7 @@ func (c *testClient) connect(addr string) {
 	if c.nc != nil {
 		c.nc.Close()
 	}
-	nc, err := net.Dial("tcp", addr)
+	nc, err := dial(addr)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func (c *testClient) pairVerify(accLTPK []byte) error {
 		return err
 	}
 	c.sess = session.NewController(shared)
-	c.dec = session.NewReader(c.sess, c.nc)
+	c.dec = session.NewReader(c.sess, c.nc, nil)
 	return nil
 }
 
@@ -350,7 +350,7 @@ func testServer(t *testing.T, store Store) (*Server, string, *testLamp) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listen()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func pairedClient(t *testing.T, srv *Server, addr, id string) *testClient {
 // serve starts server on local port, returns its address.
 func serve(t *testing.T, srv *Server) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listen()
 	if err != nil {
 		t.Fatal(err)
 	}

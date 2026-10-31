@@ -71,14 +71,19 @@ func (s *Session) Seal(dst, plain []byte) []byte {
 	}
 }
 
-// Write seals parts as one message and writes it to w frame by frame,
-// so that only one frame is held in memory.
-func (s *Session) Write(w io.Writer, parts ...[]byte) error {
+// FrameSize is the size of sealed frame with its length and tag.
+const FrameSize = 2 + MaxFrame + hapcrypto.TagSize
+
+// Write seals parts as one message and writes it to w frame by frame, sealing
+// them in buf, which is allocated if shorter than FrameSize.
+func (s *Session) Write(w io.Writer, buf []byte, parts ...[]byte) error {
 	total := 0
 	for _, p := range parts {
 		total += len(p)
 	}
-	buf := make([]byte, 2+min(total, MaxFrame)+hapcrypto.TagSize)
+	if len(buf) < FrameSize {
+		buf = make([]byte, 2+min(total, MaxFrame)+hapcrypto.TagSize)
+	}
 	s.emu.Lock()
 	defer s.emu.Unlock()
 	for {
@@ -113,9 +118,10 @@ type Reader struct {
 	plain []byte // decrypted, not read yet
 }
 
-// NewReader returns reader of decrypted data.
-func NewReader(s *Session, r io.Reader) *Reader {
-	return &Reader{s: s, r: r}
+// NewReader returns reader of decrypted data, reading frames into buf,
+// which is allocated if shorter than FrameSize.
+func NewReader(s *Session, r io.Reader, buf []byte) *Reader {
+	return &Reader{s: s, r: r, frame: buf}
 }
 
 func (rd *Reader) Read(p []byte) (int, error) {
@@ -139,7 +145,7 @@ func (rd *Reader) next() error {
 	if n > MaxFrame {
 		return errFrameTooLong
 	}
-	if cap(rd.frame) < n+hapcrypto.TagSize {
+	if len(rd.frame) < n+hapcrypto.TagSize {
 		rd.frame = make([]byte, MaxFrame+hapcrypto.TagSize)
 	}
 	frame := rd.frame[:n+hapcrypto.TagSize]

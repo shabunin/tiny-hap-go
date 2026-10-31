@@ -97,7 +97,9 @@ Wi-Fi driver and its network stack come on top: on the Cardputer they take about
 - storage is a `Store` interface: files, memory, or flash with `flashstore`, which appends
   records with checksums to one of two erase blocks and is safe against power loss
 - small heap: requests are handled one at a time, encrypted responses are written
-  frame by frame, `MinFreeHeap` refuses connections when heap runs low
+  frame by frame, `MaxConns` goroutines with their buffers are made once and reused,
+  so serving connections does not fragment the heap; `MinFreeHeap` refuses
+  connections when heap runs low
 
 ## Credits
 

@@ -339,12 +339,16 @@ func (s *Server) Serve(ln net.Listener) error {
 	s.advertise()
 
 	// Connections are served by MaxConns goroutines started here: on a board
-	// their stacks are allocated before the heap gets fragmented, and reused.
+	// their stacks and buffers are allocated before the heap gets fragmented,
+	// and reused.
+	var w jsonWriter
+	w.accessories(s.accs, true)
+	bodySize := len(w.b) + len(w.b)/4 // room for longer values
 	idle := make(chan chan net.Conn, s.cfg.MaxConns)
 	for range s.cfg.MaxConns {
 		ch := make(chan net.Conn)
 		idle <- ch
-		go s.work(ch, idle)
+		go s.work(ch, idle, newBuffers(bodySize))
 		defer close(ch)
 	}
 
@@ -377,18 +381,35 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 // work serves connections received on ch, then waits on idle for the next one.
-func (s *Server) work(ch chan net.Conn, idle chan<- chan net.Conn) {
+func (s *Server) work(ch chan net.Conn, idle chan<- chan net.Conn, b *buffers) {
 	for nc := range ch {
-		s.serveConn(nc)
+		s.serveConn(nc, b)
 		idle <- ch
+	}
+}
+
+// buffers of a worker goroutine, used by one connection at a time.
+type buffers struct {
+	rd    *bufio.Reader
+	frame []byte // sealed frame read
+	out   []byte // sealed frame written, guarded by wmu of connection
+	body  []byte // JSON of response
+}
+
+func newBuffers(bodySize int) *buffers {
+	return &buffers{
+		rd:    bufio.NewReaderSize(nil, 512),
+		frame: make([]byte, session.FrameSize),
+		out:   make([]byte, session.FrameSize),
+		body:  make([]byte, 0, bodySize),
 	}
 }
 
 // serveConn serves connection until it is closed. It is a function of its own, so
 // that nothing of the connection stays on stack of waiting goroutine for
 // conservative garbage collector of TinyGo.
-func (s *Server) serveConn(nc net.Conn) {
-	c := newConn(s, nc)
+func (s *Server) serveConn(nc net.Conn, b *buffers) {
+	c := newConn(s, nc, b)
 	s.mu.Lock()
 	closed := s.closed
 	if !closed {
@@ -400,6 +421,10 @@ func (s *Server) serveConn(nc net.Conn) {
 		return
 	}
 	c.serve()
+	// Events may still be written to c, they must not use buffers of the next connection.
+	c.wmu.Lock()
+	c.done = true
+	c.wmu.Unlock()
 }
 
 // Close stops listener and closes connections.
@@ -470,12 +495,14 @@ const (
 type conn struct {
 	srv *Server
 	nc  net.Conn
+	buf *buffers
 	rd  *bufio.Reader
 
 	dec *session.Reader // set after pair-verify, used by serve goroutine only
 
 	wmu  sync.Mutex
 	sess *session.Session // guarded by wmu
+	done bool             // guarded by wmu, buffers are not of c anymore
 
 	vmu    sync.Mutex
 	ctrlID string // verified controller
@@ -485,10 +512,19 @@ type conn struct {
 	verify *pairVerify // pair-verify in progress
 }
 
-func newConn(s *Server, nc net.Conn) *conn {
-	c := &conn{srv: s, nc: nc}
-	c.rd = bufio.NewReaderSize(connReader{c}, 512)
+func newConn(s *Server, nc net.Conn, b *buffers) *conn {
+	c := &conn{srv: s, nc: nc, buf: b, rd: b.rd}
+	c.rd.Reset(connReader{c})
 	return c
+}
+
+// json returns writer of response body in buffer of connection.
+func (c *conn) json() jsonWriter { return jsonWriter{b: c.buf.body[:0]} }
+
+// jsonResponse returns response with body of w, keeping its buffer if it grew.
+func (c *conn) jsonResponse(status int, w jsonWriter) *response {
+	c.buf.body = w.b
+	return &response{status: status, contentType: contentJSON, body: w.b}
 }
 
 // connReader reads plain data before pair-verify, decrypted after.
@@ -686,10 +722,13 @@ func statusResponse(status, hapStatus int) *response {
 func (c *conn) write(parts ...[]byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	if c.done {
+		return net.ErrClosed
+	}
 	c.nc.SetWriteDeadline(time.Now().Add(writeTimeout))
 	var err error
 	if c.sess != nil {
-		err = c.sess.Write(c.nc, parts...)
+		err = c.sess.Write(c.nc, c.buf.out, parts...)
 	} else {
 		for _, p := range parts {
 			if _, err = c.nc.Write(p); err != nil {
@@ -752,9 +791,9 @@ func (c *conn) handle(req *request) *response {
 		if req.method != "GET" {
 			return &response{status: 405}
 		}
-		var w jsonWriter
+		w := c.json()
 		w.accessories(c.srv.accs, true)
-		return &response{status: 200, contentType: contentJSON, body: w.b}
+		return c.jsonResponse(200, w)
 	case "/characteristics":
 		switch req.method {
 		case "GET":

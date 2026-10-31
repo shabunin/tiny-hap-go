@@ -382,7 +382,7 @@ func (c *conn) pairVerifyM3(items tlv.Items) *response {
 	// M4 goes plain, everything after it is encrypted
 	res.after = func() bool {
 		sess := session.NewAccessory(v.shared)
-		c.dec = session.NewReader(sess, c.nc)
+		c.dec = session.NewReader(sess, c.nc, c.buf.frame)
 		c.wmu.Lock()
 		c.sess = sess
 		c.wmu.Unlock()
