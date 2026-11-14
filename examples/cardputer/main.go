@@ -2,7 +2,7 @@
 
 // Command cardputer makes the M5Stack Cardputer (ESP32-S3) a HomeKit color lamp:
 // it joins Wi-Fi, announces itself with mDNS and shows the lamp on its screen.
-// Pair it from Home app or hkontroller with setup code 031-45-154.
+// Pair it from Home app or another HomeKit controller with setup code 031-45-154.
 //
 //	tinygo flash -target=m5stamp-s3a -port /dev/ttyACM0 \
 //	  -ldflags "-X main.ssid=SSID -X main.password=PASSWORD" .
@@ -89,6 +89,8 @@ func main() {
 		con.print("flash: "+err.Error(), red)
 		select {}
 	}
+	persist := &lampState{store: store, on: on, brightness: brightness, hue: hue, saturation: saturation}
+	persist.restore()
 
 	srv, err := accessory.NewServer(accessory.Config{
 		Store:    store,
@@ -131,6 +133,9 @@ func main() {
 		}
 		con.lamp(on.Value().(bool), brightness.Value().(int64),
 			hue.Value().(float64), saturation.Value().(float64))
+		if err := persist.update(time.Now()); err != nil {
+			con.print("save: "+err.Error(), red)
+		}
 
 		select {
 		case <-changed:
