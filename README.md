@@ -13,12 +13,11 @@ Requires Go 1.26 or newer, TinyGo 0.42 for boards.
 Works on Linux with normal Go and TinyGo builds:
 pair setup and verify, encrypted sessions, accessories, reading and writing
 characteristics, events, adding and removing controllers.
-Tested with [hkontroller](https://github.com/shabunin/hkontroller).
 
-Works on M5Stack Cardputer (ESP32-S3) over Wi-Fi with TinyGo 0.44, with hkontroller
-and aiohomekit of Home Assistant: 20 minutes of three controller connections, one of
-them reconnecting all the time, without errors. Pairings are kept in flash and survive
-resets and reflashing.
+Works on M5Stack Cardputer (ESP32-S3) over Wi-Fi with TinyGo 0.44, with a controller
+in Go and [aiohomekit](https://github.com/Jc2k/aiohomekit) of Home Assistant: an hour
+of three controller connections, one of them reconnecting all the time, without
+errors. Pairings and the lamp are kept in flash and survive resets and reflashing.
 
 ## Example
 
@@ -45,7 +44,7 @@ srv.Serve(ln)
 
 Values changed on the accessory, e.g. by a button, go to controllers with `SetValue`.
 
-[examples/lamp](examples/lamp) is a dimmable lamp to pair with Home app or hkontroller:
+[examples/lamp](examples/lamp) is a dimmable lamp to pair with Home app or another HomeKit controller:
 
 ```sh
 go run ./examples/lamp -debug
@@ -61,7 +60,8 @@ cd examples/cardputer
 tinygo flash -target=m5stamp-s3a -ldflags "-X main.ssid=SSID -X main.password=PASSWORD" .
 ```
 
-It keeps id, keys and pairings in the two flash sectors below 4 MB. To forget them:
+It keeps id, keys, pairings and the lamp in the two flash sectors below 4 MB, the lamp
+once it stopped changing for 3 s. To forget them:
 
 ```sh
 esptool --port /dev/ttyACM0 erase-region 0x3FE000 0x2000
@@ -106,8 +106,23 @@ Wi-Fi driver and its network stack come on top: on the Cardputer they take about
 
 ## Credits
 
-Protocol details follow [hkontroller](https://github.com/shabunin/hkontroller),
-derived from [`github.com/brutella/hap`](https://github.com/brutella/hap).
+- [hap](https://github.com/brutella/hap) by Matthias Hochgatterer: pairing, sessions
+  and protocol details are built upon it
+- [TinyGo](https://tinygo.org): compiler and runtime for boards
+- [espradio](https://github.com/tinygo-org/espradio) by the TinyGo authors: Wi-Fi of ESP32-S3
+- [lneto](https://github.com/soypat/lneto) by Patricio Whittingslow: TCP/IP stack on boards
+- [drivers](https://github.com/tinygo-org/drivers) and
+  [tinyfont](https://github.com/tinygo-org/tinyfont) of TinyGo: screen of the Cardputer
+- [x/crypto](https://pkg.go.dev/golang.org/x/crypto) by the Go authors:
+  ChaCha20-Poly1305, X25519, HKDF
+- [edwards25519](https://github.com/FiloSottile/edwards25519) by Filippo Valsorda:
+  Ed25519 verification without lookup table
+- [go-pkgs](https://github.com/tadglines/go-pkgs) by Tad Glines: SRP of pair-setup
+- [dnssd](https://github.com/shabunin/dnssd), fork of
+  [brutella/dnssd](https://github.com/brutella/dnssd) by Matthias Hochgatterer: mDNS on Linux
+- [dns](https://github.com/miekg/dns) by Miek Gieben: DNS messages in tests of the mDNS responder
+- [aiohomekit](https://github.com/Jc2k/aiohomekit) of Home Assistant: second controller in
+  interoperability and stress tests
 
 ## License
 

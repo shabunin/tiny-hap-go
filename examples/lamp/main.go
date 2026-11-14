@@ -1,5 +1,5 @@
 // Lamp is a dimmable lightbulb accessory, announced with mDNS.
-// Pair it from Home app or hkontroller with setup code 031-45-154.
+// Pair it from Home app or another HomeKit controller with setup code 031-45-154.
 package main
 
 import (
