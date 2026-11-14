@@ -376,6 +376,12 @@ func (c *conn) pairVerifyM3(items tlv.Items) *response {
 		return tlvError(4, tlv.ErrAuthentication)
 	}
 
+	// Controller is known before M4 is sent: once it has M4, it or another one
+	// may remove its pairing, and that has to find this connection to close it.
+	c.vmu.Lock()
+	c.ctrlID, c.admin = p.id, p.admin
+	c.vmu.Unlock()
+
 	var w tlv.Writer
 	w.Byte(tlv.State, 4)
 	res := tlvResponse(w.Data())
@@ -386,9 +392,6 @@ func (c *conn) pairVerifyM3(items tlv.Items) *response {
 		c.wmu.Lock()
 		c.sess = sess
 		c.wmu.Unlock()
-		c.vmu.Lock()
-		c.ctrlID, c.admin = p.id, p.admin
-		c.vmu.Unlock()
 		return true
 	}
 	return res
