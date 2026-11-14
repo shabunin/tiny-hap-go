@@ -15,8 +15,8 @@ jobs:
         go: [go.mod, stable]
     name: test (go ${{ matrix.go }})
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go != 'go.mod' && matrix.go || '' }}
           go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
@@ -43,8 +43,8 @@ jobs:
         target: [pico2-w, pico-w, esp32s3-generic]
     name: tinygo (${{ matrix.target }})
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: acifani/setup-tinygo@v3
