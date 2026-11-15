@@ -843,3 +843,54 @@ func TestFsStore(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+type mockAdvertiser struct {
+	mu      sync.Mutex
+	port    int
+	stopped int
+}
+
+func (a *mockAdvertiser) Advertise(name string, port int, txt map[string]string) error {
+	a.mu.Lock()
+	a.port = port
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *mockAdvertiser) Stop() {
+	a.mu.Lock()
+	a.stopped++
+	a.mu.Unlock()
+}
+
+func TestServerCloseStopsAdvertiser(t *testing.T) {
+	adv := &mockAdvertiser{}
+	l := newTestLamp()
+	srv, err := NewServer(Config{Pin: "031-45-154", Advertiser: adv}, l.acc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ln) }()
+
+	for range 50 {
+		adv.mu.Lock()
+		p := adv.port
+		adv.mu.Unlock()
+		if p > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	srv.Close()
+	<-done
+	adv.mu.Lock()
+	defer adv.mu.Unlock()
+	if adv.stopped != 1 {
+		t.Fatalf("advertiser stopped %d times, want 1", adv.stopped)
+	}
+}

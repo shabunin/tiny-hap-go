@@ -343,8 +343,8 @@ func (s *Server) Serve(ln net.Listener) error {
 		return net.ErrClosed
 	}
 	s.ln = ln
-	if a, ok := ln.Addr().(*net.TCPAddr); ok {
-		s.port = a.Port
+	if p := addrPort(ln.Addr()); p > 0 {
+		s.port = p
 	}
 	s.mu.Unlock()
 	s.advertise()
@@ -455,7 +455,28 @@ func (s *Server) Close() error {
 	for _, c := range conns {
 		c.close()
 	}
+	if stopper, ok := s.cfg.Advertiser.(interface{ Stop() }); ok {
+		stopper.Stop()
+	}
 	return err
+}
+
+func addrPort(addr net.Addr) int {
+	if addr == nil {
+		return 0
+	}
+	if a, ok := addr.(*net.TCPAddr); ok {
+		return a.Port
+	}
+	_, portStr, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil || p <= 0 || p > 65535 {
+		return 0
+	}
+	return p
 }
 
 // freeHeap returns bytes of heap free after garbage collection.

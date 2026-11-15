@@ -3,9 +3,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"log"
 	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/shabunin/tiny-hap-go/accessory"
 	"github.com/shabunin/tiny-hap-go/advertise/dnssd"
@@ -58,5 +62,13 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("accessory %s on %s, paired: %v, setup code %s", srv.ID(), ln.Addr(), srv.IsPaired(), *pin)
-	log.Fatal(srv.Serve(ln))
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sig
+		srv.Close()
+	}()
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Fatal(err)
+	}
 }
