@@ -40,6 +40,8 @@ const (
 
 	minInterval   = time.Second // between multicast answers, RFC 6762 6
 	announcements = 2           // sent a second apart, RFC 6762 8.3
+
+	maxMessage = 1500 - 20 - 8 // UDP payload in one Ethernet frame
 )
 
 var serviceType = []string{"_hap", "_tcp", "local"}
@@ -78,12 +80,26 @@ func (r *Responder) Advertise(name string, port int, txt map[string]string) erro
 	if err != nil {
 		return err
 	}
+	// host and ip never change after New
+	probe := &Responder{host: r.host, ip: r.ip, name: name, port: uint16(port), txt: b}
+	if len(probe.appendResponse(nil)) > maxMessage {
+		return errors.New("mdns: response does not fit in one packet")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.name, r.port, r.txt = name, uint16(port), b
 	r.announce = announcements
 	r.sent = time.Time{}
 	return nil
+}
+
+// Stop withdraws the service: nothing is answered until the next Advertise.
+func (r *Responder) Stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.name = ""
+	r.answer = false
+	r.announce = 0
 }
 
 // encodeTXT returns TXT record data: key=value strings with length byte, sorted by key.
@@ -254,7 +270,8 @@ func (r *Responder) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame in
 	avail := len(carrierData) - offsetToFrame
 	msg := r.appendResponse(carrierData[offsetToFrame:offsetToFrame:len(carrierData)])
 	if len(msg) > avail {
-		// Drop oversized response so subsequent ticks do not spin allocating it.
+		// Advertise keeps responses within maxMessage, so only a carrier smaller
+		// than a frame gets here. Drop it so later ticks do not build it again.
 		r.answer = false
 		r.announce = 0
 		return 0, nil

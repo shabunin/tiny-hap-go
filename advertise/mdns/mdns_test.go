@@ -1,7 +1,9 @@
 package mdns
 
 import (
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,5 +211,34 @@ func TestOversizedAndValidation(t *testing.T) {
 	}
 	if r.answer || r.announce != 0 {
 		t.Fatalf("oversized response left pending flags: answer=%v announce=%d", r.answer, r.announce)
+	}
+}
+
+func TestAdvertiseTooLarge(t *testing.T) {
+	r := newResponder(t)
+	txt := map[string]string{}
+	for i := range 8 {
+		txt[fmt.Sprint("k", i)] = strings.Repeat("v", 200)
+	}
+	if err := r.Advertise("Lamp", 51826, txt); err == nil {
+		t.Fatal("response larger than a packet accepted")
+	}
+	if r.name != "Tiny Lamp" {
+		t.Fatalf("failed Advertise changed name to %q", r.name)
+	}
+}
+
+func TestStop(t *testing.T) {
+	r := newResponder(t)
+	r.Stop()
+	carrier := make([]byte, 1500)
+	if n, err := r.Encapsulate(carrier, ipOffset, udpOffset); err != nil || n != 0 {
+		t.Fatalf("stopped responder sent %d bytes, %v", n, err)
+	}
+	if err := r.Advertise("Tiny Lamp", 51826, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := r.Encapsulate(carrier, ipOffset, udpOffset); err != nil || n == 0 {
+		t.Fatalf("responder did not announce after Advertise: %d, %v", n, err)
 	}
 }
