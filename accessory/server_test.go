@@ -679,3 +679,29 @@ func TestPairingsEncoding(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+func TestFsStore(t *testing.T) {
+	s := NewFsStore(t.TempDir())
+	if _, err := s.Get("missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			val := []byte(strconv.Itoa(i))
+			for range 20 {
+				if err := s.Set("k", val); err != nil {
+					t.Error(err)
+					return
+				}
+				if _, err := s.Get("k"); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+}

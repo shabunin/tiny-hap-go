@@ -46,15 +46,18 @@ func (s *memStore) Set(key string, value []byte) error {
 }
 
 type fsStore struct {
+	mu  sync.Mutex
 	dir string
 }
 
 // NewFsStore returns store keeping a file per key in directory.
 func NewFsStore(dir string) Store {
-	return fsStore{dir}
+	return &fsStore{dir: dir}
 }
 
-func (s fsStore) Get(key string) ([]byte, error) {
+func (s *fsStore) Get(key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	b, err := os.ReadFile(filepath.Join(s.dir, key))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
@@ -63,7 +66,9 @@ func (s fsStore) Get(key string) ([]byte, error) {
 }
 
 // Set writes temporary file and renames it, so value is never half written.
-func (s fsStore) Set(key string, value []byte) error {
+func (s *fsStore) Set(key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
