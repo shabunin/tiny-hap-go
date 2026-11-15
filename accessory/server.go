@@ -602,17 +602,20 @@ func (c *conn) serve() {
 		c.srv.handling.Lock()
 		res := c.handle(req)
 		c.srv.handling.Unlock()
-		if err := c.write(res.header(), res.body); err != nil {
-			logf("%s: write: %v", c.nc.RemoteAddr(), err)
-			return
-		}
+		err = c.write(res.header(), res.body)
 		// Events go after response and out of handling: a controller that does
 		// not read them holds up only this connection, for eventTimeout at most.
+		// Still notify other subscribers if writing the response failed after
+		// the write already took effect.
 		for i, ch := range c.changed {
 			c.srv.notify(ch, c)
 			c.changed[i] = nil
 		}
 		c.changed = c.changed[:0]
+		if err != nil {
+			logf("%s: write: %v", c.nc.RemoteAddr(), err)
+			return
+		}
 		if res.after != nil && !res.after() {
 			return
 		}

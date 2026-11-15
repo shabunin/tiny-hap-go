@@ -756,6 +756,28 @@ func TestReverifyRejected(t *testing.T) {
 	}
 }
 
+func TestNotifyOnWriteResponseFailure(t *testing.T) {
+	srv, addr, l := testServer(t, nil)
+	sub := pairedClient(t, srv, addr, "sub")
+	put(sub, `{"characteristics":[{"aid":1,"iid":10,"ev":true}]}`)
+
+	// Use raw encrypted write that closes immediately before reading response.
+	writer := addPairing(t, srv, addr, sub, "writer", false)
+	l.on.OnWrite = func(any) error {
+		writer.nc.Close()
+		return nil
+	}
+	body := `{"characteristics":[{"aid":1,"iid":10,"value":true}]}`
+	req := fmt.Appendf(nil, "PUT /characteristics HTTP/1.1\r\nHost: test\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s",
+		contentJSON, len(body), body)
+	if _, err := writer.nc.Write(writer.sess.Seal(nil, req)); err != nil {
+		t.Fatal(err)
+	}
+	if ev := sub.waitEvent(); ev != `{"characteristics":[{"aid":1,"iid":10,"value":true}]}` {
+		t.Fatalf("event %s", ev)
+	}
+}
+
 func TestUnverifiedAndRequestTimeouts(t *testing.T) {
 	origUnverified, origReq := unverifiedTimeout, requestTimeout
 	unverifiedTimeout = 60 * time.Millisecond
