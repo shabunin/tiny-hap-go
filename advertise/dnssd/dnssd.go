@@ -33,11 +33,11 @@ func (a *Advertiser) Advertise(name string, port int, txt map[string]string) err
 	}
 	a.stopLocked()
 
-	rs, err := dnssd.NewResponder()
+	svc, err := dnssd.NewService(dnssd.Config{Name: name, Type: "_hap._tcp", Port: port, Text: txt})
 	if err != nil {
 		return err
 	}
-	svc, err := dnssd.NewService(dnssd.Config{Name: name, Type: "_hap._tcp", Port: port, Text: txt})
+	rs, err := dnssd.NewResponder()
 	if err != nil {
 		return err
 	}
