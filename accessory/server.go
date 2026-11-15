@@ -549,6 +549,12 @@ func (c *conn) controller() (id string, admin bool) {
 	return c.ctrlID, c.admin
 }
 
+func (c *conn) setAdmin(admin bool) {
+	c.vmu.Lock()
+	c.admin = admin
+	c.vmu.Unlock()
+}
+
 func (c *conn) subscribed(ch *Characteristic) bool {
 	c.vmu.Lock()
 	defer c.vmu.Unlock()

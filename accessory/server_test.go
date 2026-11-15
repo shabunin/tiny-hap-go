@@ -680,6 +680,73 @@ func TestPairingsEncoding(t *testing.T) {
 	}
 }
 
+type failSetStore struct {
+	Store
+	failKey string
+}
+
+func (s *failSetStore) Set(key string, value []byte) error {
+	if key == s.failKey {
+		return errors.New("disk full")
+	}
+	return s.Store.Set(key, value)
+}
+
+func updatePairingPerm(t *testing.T, c *testClient, id string, ltpk []byte, admin bool) error {
+	t.Helper()
+	var w tlv.Writer
+	w.Byte(tlv.State, 1)
+	w.Byte(tlv.Method, 3)
+	w.String(tlv.Identifier, id)
+	w.Bytes(tlv.PublicKey, ltpk)
+	if admin {
+		w.Byte(tlv.Permissions, 1)
+	} else {
+		w.Byte(tlv.Permissions, 0)
+	}
+	items, err := c.postTLV("/pairings", &w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return itemsError(items)
+}
+
+func TestPairingAdminDowngradeAndRollback(t *testing.T) {
+	store := &failSetStore{Store: NewMemStore()}
+	srv, addr, _ := testServer(t, store)
+	a := pairedClient(t, srv, addr, "a")
+
+	// Downgrading the sole admin must be rejected.
+	if err := updatePairingPerm(t, a, "a", a.ltpk, false); err == nil {
+		t.Fatal("sole admin downgraded")
+	}
+
+	// Add second admin b, then downgrade b while b has an open connection.
+	b := addPairing(t, srv, addr, a, "b", true)
+	if err := updatePairingPerm(t, a, "b", b.ltpk, false); err != nil {
+		t.Fatalf("downgrade b with admin a present: %v", err)
+	}
+	var terr tlvErr
+	if _, err := listPairings(t, b); !errors.As(err, &terr) || byte(terr) != tlv.ErrAuthentication {
+		t.Fatalf("downgraded live connection listed pairings: %v", err)
+	}
+
+	// Store failure on pairings add/remove must not mutate in-memory pairings.
+	store.failKey = "pairings"
+	c := newTestController(t, "c")
+	if err := updatePairingPerm(t, a, "c", c.ltpk, false); err == nil {
+		t.Fatal("add succeeded despite store error")
+	}
+	if err := removePairing(t, a, "b"); err == nil {
+		t.Fatal("remove succeeded despite store error")
+	}
+	store.failKey = ""
+	pp, err := listPairings(t, a)
+	if err != nil || len(pp) != 2 || pp[0].id != "a" || pp[1].id != "b" {
+		t.Fatalf("pairings after failed store writes: %+v %v", pp, err)
+	}
+}
+
 func TestFsStore(t *testing.T) {
 	s := NewFsStore(t.TempDir())
 	if _, err := s.Get("missing"); !errors.Is(err, ErrNotFound) {

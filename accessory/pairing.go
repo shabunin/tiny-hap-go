@@ -77,20 +77,29 @@ func (s *Server) loadPairings() error {
 	return err
 }
 
-// savePairingsLocked stores pairings, s.mu must be held.
-func (s *Server) savePairingsLocked() error {
+// savePairingsLocked stores pp as pairings, s.mu must be held.
+func (s *Server) savePairingsLocked(pp []pairing) error {
 	var w tlv.Writer
-	encodePairings(&w, s.pairings)
+	encodePairings(&w, pp)
 	return s.cfg.Store.Set("pairings", w.Data())
 }
 
-func (s *Server) findPairingLocked(id string) int {
-	for i, p := range s.pairings {
+func findPairing(pp []pairing, id string) int {
+	for i, p := range pp {
 		if p.id == id {
 			return i
 		}
 	}
 	return -1
+}
+
+func hasAdminExcept(pp []pairing, skip int) bool {
+	for i, p := range pp {
+		if i != skip && p.admin {
+			return true
+		}
+	}
+	return false
 }
 
 func tlvError(state, code byte) *response {
@@ -260,13 +269,13 @@ func (c *conn) pairSetupM5(items tlv.Items) *response {
 		s.mu.Unlock()
 		return tlvError(6, tlv.ErrUnavailable)
 	}
-	s.pairings = []pairing{{id: string(id), ltpk: append([]byte(nil), ltpk...), admin: true}}
-	err = s.savePairingsLocked()
-	if err != nil {
-		s.pairings = nil
+	next := []pairing{{id: string(id), ltpk: append([]byte(nil), ltpk...), admin: true}}
+	err = s.savePairingsLocked(next)
+	if err == nil {
+		s.pairings = next
+		s.failed = 0
 	}
 	s.setup = nil
-	s.failed = 0
 	s.mu.Unlock()
 	if err != nil {
 		logf("saving pairing: %v", err)
@@ -365,7 +374,7 @@ func (c *conn) pairVerifyM3(items tlv.Items) *response {
 	sig, _ := sub.Get(tlv.Signature)
 
 	s.mu.Lock()
-	i := s.findPairingLocked(string(id))
+	i := findPairing(s.pairings, string(id))
 	var p pairing
 	if i >= 0 {
 		p = s.pairings[i]
@@ -419,22 +428,39 @@ func (c *conn) pairings(body []byte) *response {
 		if len(id) == 0 || len(ltpk) != ed25519.PublicKeySize {
 			return tlvError(2, tlv.ErrUnknown)
 		}
+		isAdmin := perm == 1
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		if i := s.findPairingLocked(string(id)); i >= 0 {
-			if !bytes.Equal(s.pairings[i].ltpk, ltpk) {
+		next := append([]pairing(nil), s.pairings...)
+		updated := false
+		if i := findPairing(next, string(id)); i >= 0 {
+			if !bytes.Equal(next[i].ltpk, ltpk) {
+				s.mu.Unlock()
 				return tlvError(2, tlv.ErrUnknown)
 			}
-			s.pairings[i].admin = perm == 1
+			if next[i].admin && !isAdmin && !hasAdminExcept(next, i) {
+				s.mu.Unlock()
+				return tlvError(2, tlv.ErrUnknown)
+			}
+			updated = next[i].admin != isAdmin
+			next[i].admin = isAdmin
 		} else {
-			if len(s.pairings) >= maxPairings {
+			if len(next) >= maxPairings {
+				s.mu.Unlock()
 				return tlvError(2, tlv.ErrMaxPeers)
 			}
-			s.pairings = append(s.pairings, pairing{id: string(id), ltpk: append([]byte(nil), ltpk...), admin: perm == 1})
+			next = append(next, pairing{id: string(id), ltpk: append([]byte(nil), ltpk...), admin: isAdmin})
 		}
-		if err := s.savePairingsLocked(); err != nil {
+		if err := s.savePairingsLocked(next); err != nil {
+			s.mu.Unlock()
 			logf("saving pairing: %v", err)
 			return tlvError(2, tlv.ErrUnknown)
+		}
+		s.pairings = next
+		s.mu.Unlock()
+		if updated {
+			for _, other := range s.connsOf(string(id)) {
+				other.setAdmin(isAdmin)
+			}
 		}
 		var w tlv.Writer
 		w.Byte(tlv.State, 2)
@@ -442,42 +468,42 @@ func (c *conn) pairings(body []byte) *response {
 
 	case 4: // remove
 		s.mu.Lock()
+		next := append([]pairing(nil), s.pairings...)
 		removed := []string{string(id)}
-		if i := s.findPairingLocked(string(id)); i >= 0 {
-			s.pairings = append(s.pairings[:i], s.pairings[i+1:]...)
-		}
-		hasAdmin := false
-		for _, p := range s.pairings {
-			hasAdmin = hasAdmin || p.admin
+		if i := findPairing(next, string(id)); i >= 0 {
+			next = append(next[:i], next[i+1:]...)
 		}
 		// without admin nobody could manage accessory, all pairings go
-		if !hasAdmin {
-			for _, p := range s.pairings {
+		if !hasAdminExcept(next, -1) {
+			for _, p := range next {
 				removed = append(removed, p.id)
 			}
-			s.pairings = nil
+			next = nil
 		}
-		err := s.savePairingsLocked()
-		s.mu.Unlock()
-		if err != nil {
+		if err := s.savePairingsLocked(next); err != nil {
+			s.mu.Unlock()
 			logf("saving pairings: %v", err)
 			return tlvError(2, tlv.ErrUnknown)
+		}
+		s.pairings = next
+		s.mu.Unlock()
+
+		// Close other removed connections now so they cannot send requests
+		// before the remove response finishes writing.
+		own := false
+		for _, rid := range removed {
+			for _, other := range s.connsOf(rid) {
+				if other == c {
+					own = true
+				} else {
+					other.close()
+				}
+			}
 		}
 		var w tlv.Writer
 		w.Byte(tlv.State, 2)
 		res := tlvResponse(w.Data())
 		res.after = func() bool {
-			// connections of removed controllers are closed after response
-			own := false
-			for _, rid := range removed {
-				for _, other := range s.connsOf(rid) {
-					if other == c {
-						own = true
-					} else {
-						other.close()
-					}
-				}
-			}
 			s.advertise()
 			return !own
 		}
