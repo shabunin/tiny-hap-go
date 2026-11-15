@@ -50,11 +50,15 @@ func main() {
 
 	// Writes come from connection goroutines, the screen is drawn here only.
 	changed := make(chan struct{}, 1)
-	onWrite := func(any) error {
+	identified := make(chan struct{}, 1)
+	signal := func(ch chan struct{}) {
 		select {
-		case changed <- struct{}{}:
+		case ch <- struct{}{}:
 		default:
 		}
+	}
+	onWrite := func(any) error {
+		signal(changed)
 		return nil
 	}
 
@@ -100,7 +104,7 @@ func main() {
 		// Wi-Fi takes half of the heap, leave room for requests of open connections.
 		MinFreeHeap: minFreeHeap,
 		Advertiser:  newAdvertiser(ip),
-		OnIdentify:  func() { onWrite(nil) },
+		OnIdentify:  func() { signal(identified) },
 	}, lamp)
 	if err != nil {
 		con.print(err.Error(), red)
@@ -139,6 +143,8 @@ func main() {
 
 		select {
 		case <-changed:
+		case <-identified:
+			con.print("identify", cyan)
 		case <-ticker.C:
 		}
 	}
