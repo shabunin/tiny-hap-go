@@ -213,7 +213,13 @@ func (s *Server) firstName() string {
 
 func (s *Server) loadIdentity() error {
 	id, err := s.cfg.Store.Get("id")
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	seed, err2 := s.cfg.Store.Get("key")
+	if err2 != nil && !errors.Is(err2, ErrNotFound) {
+		return err2
+	}
 	if errors.Is(err, ErrNotFound) || errors.Is(err2, ErrNotFound) {
 		var b [6]byte
 		if _, err := rand.Read(b[:]); err != nil {
@@ -230,10 +236,6 @@ func (s *Server) loadIdentity() error {
 		if err := s.cfg.Store.Set("id", id); err != nil {
 			return err
 		}
-	} else if err != nil {
-		return err
-	} else if err2 != nil {
-		return err2
 	}
 	if len(seed) != ed25519.SeedSize {
 		return errors.New("accessory: stored key is broken")
