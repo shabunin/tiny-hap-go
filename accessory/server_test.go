@@ -756,6 +756,35 @@ func TestReverifyRejected(t *testing.T) {
 	}
 }
 
+func TestUnverifiedAndRequestTimeouts(t *testing.T) {
+	origUnverified, origReq := unverifiedTimeout, requestTimeout
+	unverifiedTimeout = 60 * time.Millisecond
+	requestTimeout = 60 * time.Millisecond
+	t.Cleanup(func() {
+		unverifiedTimeout, requestTimeout = origUnverified, origReq
+	})
+
+	srv, addr, _ := testServer(t, nil)
+	// Stall unverified connection after M1: timeout must release s.setup and slot.
+	a := newTestController(t, "a")
+	a.connect(addr)
+	var w tlv.Writer
+	w.Byte(tlv.State, 1)
+	w.Byte(tlv.Method, 0)
+	if _, err := a.postTLV("/pair-setup", &w); err != nil {
+		t.Fatal(err)
+	}
+	a.expectClosed()
+
+	b := pairedClient(t, srv, addr, "b")
+	// Send headers promising body, then stall mid-body: requestTimeout must close b.
+	req := "PUT /characteristics HTTP/1.1\r\nContent-Length: 50\r\n\r\n{\"char"
+	if _, err := b.nc.Write(b.sess.Seal(nil, []byte(req))); err != nil {
+		t.Fatal(err)
+	}
+	b.expectClosed()
+}
+
 func TestFsStore(t *testing.T) {
 	s := NewFsStore(t.TempDir())
 	if _, err := s.Get("missing"); !errors.Is(err, ErrNotFound) {
