@@ -323,6 +323,9 @@ func (c *conn) pairVerify(body []byte) *response {
 }
 
 func (c *conn) pairVerifyM1(items tlv.Items) *response {
+	if ctrl, _ := c.controller(); ctrl != "" {
+		return tlvError(2, tlv.ErrUnknown)
+	}
 	s := c.srv
 	ctrlPub, _ := items.Get(tlv.PublicKey)
 	if len(ctrlPub) != 32 {
@@ -396,6 +399,9 @@ func (c *conn) pairVerifyM3(items tlv.Items) *response {
 	res := tlvResponse(w.Data())
 	// M4 goes plain, everything after it is encrypted
 	res.after = func() bool {
+		if c.rd.Buffered() > 0 {
+			return false
+		}
 		sess := session.NewAccessory(v.shared)
 		c.dec = session.NewReader(sess, c.nc, c.buf.frame)
 		c.wmu.Lock()

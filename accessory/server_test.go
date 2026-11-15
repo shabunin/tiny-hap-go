@@ -747,6 +747,15 @@ func TestPairingAdminDowngradeAndRollback(t *testing.T) {
 	}
 }
 
+func TestReverifyRejected(t *testing.T) {
+	srv, addr, _ := testServer(t, nil)
+	c := pairedClient(t, srv, addr, "ctrl")
+	var terr tlvErr
+	if err := c.pairVerify(srv.ltpk); !errors.As(err, &terr) {
+		t.Fatalf("expected error on re-verify of verified conn, got %v", err)
+	}
+}
+
 func TestFsStore(t *testing.T) {
 	s := NewFsStore(t.TempDir())
 	if _, err := s.Get("missing"); !errors.Is(err, ErrNotFound) {
