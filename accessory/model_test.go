@@ -32,6 +32,11 @@ func TestConvert(t *testing.T) {
 		{NewName("x"), string(make([]byte, 65)), nil},
 		{NewCharacteristic("FF", FormatUint8, PermRead, 0), 256, nil},
 		{NewCharacteristic("FF", FormatUint8, PermRead, 0), 255, int64(255)},
+		{NewCharacteristic("FF", FormatUint64, PermRead, 0), uint64(1 << 50), int64(1 << 50)},
+		{NewCharacteristic("FF", FormatUint64, PermRead, 0), uint64(1 << 63), nil},
+		{NewCharacteristic("FF", FormatUint64, PermRead, 0), uint64(math.MaxUint64), nil},
+		{&Characteristic{Type: "FF", Format: FormatUint8, ValidValues: []int{1, 3}}, 3, int64(3)},
+		{&Characteristic{Type: "FF", Format: FormatUint8, ValidValues: []int{1, 3}}, 2, nil},
 	}
 	for i, tt := range tests {
 		got, err := tt.c.convert(tt.in)

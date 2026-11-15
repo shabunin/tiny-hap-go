@@ -44,8 +44,8 @@ const (
 	PermRead           Perm = 1 << iota // pr: controller may read value
 	PermWrite                           // pw: controller may write value
 	PermEvents                          // ev: controller may subscribe to changes
-	PermAdditionalAuth                  // aa
-	PermTimedWrite                      // tw: write has to be prepared first
+	PermAdditionalAuth                  // aa (metadata only, not handled by Server)
+	PermTimedWrite                      // tw (metadata only, /prepare not handled by Server)
 	PermHidden                          // hd: not shown to user
 	PermWriteResponse                   // wr: write may return value
 )
@@ -119,7 +119,8 @@ func (c *Characteristic) Value() any {
 }
 
 // SetValue changes value and sends it to subscribed controllers if it changed.
-// A controller that stopped reading holds it up for a second, then is disconnected.
+// Events are written synchronously (up to 1 s per stalled subscriber) and read
+// Value(), so OnRead must not take locks held across SetValue.
 func (c *Characteristic) SetValue(v any) error {
 	nv, err := c.convert(v)
 	if err != nil {
@@ -167,10 +168,11 @@ func (c *Characteristic) convert(v any) (any, error) {
 		}
 		lo, hi := formatRange(c.Format)
 		// no builtin min and max of floats: TinyGo for 32-bit ARM Linux fails on them
-		if f < lo || f > hi || c.HasRange && (f < c.Min || f > c.Max) {
+		// 0x1p63 is float64(math.MaxInt64)+1, so >= 0x1p63 would overflow int64(f).
+		if f < lo || f > hi || c.Format == FormatUint64 && f >= 0x1p63 || c.HasRange && (f < c.Min || f > c.Max) {
 			return nil, errRange
 		}
-		if len(c.ValidValues) > 0 && !validValue(c.ValidValues, int(f)) {
+		if len(c.ValidValues) > 0 && !validValue(c.ValidValues, int64(f)) {
 			return nil, errRange
 		}
 		// float64 keeps integers up to 2^53 exactly, enough for HAP values
@@ -201,9 +203,9 @@ func (c *Characteristic) convert(v any) (any, error) {
 	return nil, errType
 }
 
-func validValue(vv []int, v int) bool {
+func validValue(vv []int, v int64) bool {
 	for _, x := range vv {
-		if x == v {
+		if int64(x) == v {
 			return true
 		}
 	}
