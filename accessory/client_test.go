@@ -33,6 +33,9 @@ type testClient struct {
 	ltpk ed25519.PublicKey
 
 	events []string // bodies of events received while waiting for responses
+
+	// tamper, if set, changes each request as it goes on the wire.
+	tamper func(req []byte) []byte
 }
 
 func newTestController(t *testing.T, id string) *testClient {
@@ -114,6 +117,9 @@ func (c *testClient) do(method, path, contentType string, body []byte) (testResp
 	req = append(req, body...)
 	if c.sess != nil {
 		req = c.sess.Seal(nil, req)
+	}
+	if c.tamper != nil {
+		req = c.tamper(req)
 	}
 	if _, err := c.nc.Write(req); err != nil {
 		return testResponse{}, err

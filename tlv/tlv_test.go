@@ -71,3 +71,45 @@ func TestParseTruncated(t *testing.T) {
 		}
 	}
 }
+
+func FuzzParse(f *testing.F) {
+	var w Writer
+	w.Byte(State, 1)
+	w.Bytes(PublicKey, bytes.Repeat([]byte{7}, 300))
+	w.Separator()
+	w.String(Identifier, "ctrl")
+	f.Add(w.Data())
+	f.Add([]byte{1, 255})
+	f.Add(append([]byte{3, 255}, make([]byte, 255)...))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		items, err := Parse(b)
+		if err != nil {
+			return
+		}
+		n := 0
+		for _, it := range items {
+			n += len(it.Value)
+		}
+		if n > len(b) {
+			t.Fatalf("values of %d bytes from %d bytes", n, len(b))
+		}
+		// Written back, the items parse the same, unless neighbours share a
+		// type: the format cannot tell those from fragments of one value.
+		var w Writer
+		for i, it := range items {
+			if i > 0 && items[i-1].Type == it.Type {
+				return
+			}
+			w.Bytes(it.Type, it.Value)
+		}
+		again, err := Parse(w.Data())
+		if err != nil || len(again) != len(items) {
+			t.Fatalf("written back: %d items, %v; want %d", len(again), err, len(items))
+		}
+		for i := range items {
+			if again[i].Type != items[i].Type || !bytes.Equal(again[i].Value, items[i].Value) {
+				t.Fatalf("item %d: %x, want %x", i, again[i].Value, items[i].Value)
+			}
+		}
+	})
+}
