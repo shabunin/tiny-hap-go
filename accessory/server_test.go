@@ -680,6 +680,17 @@ func TestPairingsEncoding(t *testing.T) {
 	}
 }
 
+func TestDuplicateIIDs(t *testing.T) {
+	c1 := NewOn()
+	c1.ID = 5
+	c2 := NewBrightness()
+	c2.ID = 5
+	acc := &Accessory{Services: []*Service{NewInfoService(Info{Name: "Lamp"}), NewService(ServiceLightbulb, c1, c2)}}
+	if _, err := NewServer(Config{Pin: "031-45-154"}, acc); err == nil {
+		t.Fatal("expected duplicate iid error")
+	}
+}
+
 type failSetStore struct {
 	Store
 	failKey string

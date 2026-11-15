@@ -90,6 +90,9 @@ func NewServer(cfg Config, accs ...*Accessory) (*Server, error) {
 	if cfg.Store == nil {
 		cfg.Store = NewMemStore()
 	}
+	if cfg.MaxConns < 0 {
+		return nil, errors.New("accessory: negative MaxConns")
+	}
 	if cfg.MaxConns == 0 {
 		cfg.MaxConns = 8
 	}
@@ -157,10 +160,16 @@ func (s *Server) assignIDs() error {
 		iids := make(map[uint64]bool)
 		for _, sv := range a.Services {
 			if sv.ID != 0 {
+				if iids[sv.ID] {
+					return fmt.Errorf("accessory: duplicate iid %d", sv.ID)
+				}
 				iids[sv.ID] = true
 			}
 			for _, c := range sv.Characteristics {
 				if c.ID != 0 {
+					if iids[c.ID] {
+						return fmt.Errorf("accessory: duplicate iid %d", c.ID)
+					}
 					iids[c.ID] = true
 				}
 			}
