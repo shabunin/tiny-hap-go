@@ -618,9 +618,9 @@ func (c *conn) serve() {
 	}()
 	for {
 		if ctrl, _ := c.controller(); ctrl == "" {
-			c.nc.SetReadDeadline(time.Now().Add(unverifiedTimeout))
+			setReadDeadline(c.nc, time.Now().Add(unverifiedTimeout))
 		} else {
-			c.nc.SetReadDeadline(time.Time{})
+			setReadDeadline(c.nc, time.Time{})
 		}
 		req, err := readRequest(c.rd, c.nc)
 		if err != nil {
@@ -680,6 +680,14 @@ func readLine(rd *bufio.Reader) (string, error) {
 	}
 }
 
+// setReadDeadline sets deadline, logging when connection does not support it:
+// then stalled controllers keep their connection slots.
+func setReadDeadline(nc net.Conn, t time.Time) {
+	if err := nc.SetReadDeadline(t); err != nil {
+		logf("%s: read deadline: %v", nc.RemoteAddr(), err)
+	}
+}
+
 // readRequest reads HTTP/1.1 request with Content-Length body.
 func readRequest(rd *bufio.Reader, nc net.Conn) (*request, error) {
 	line, err := readLine(rd)
@@ -687,7 +695,7 @@ func readRequest(rd *bufio.Reader, nc net.Conn) (*request, error) {
 		return nil, err
 	}
 	if nc != nil {
-		nc.SetReadDeadline(time.Now().Add(requestTimeout))
+		setReadDeadline(nc, time.Now().Add(requestTimeout))
 	}
 	method, rest, ok1 := strings.Cut(line, " ")
 	target, proto, ok2 := strings.Cut(rest, " ")
