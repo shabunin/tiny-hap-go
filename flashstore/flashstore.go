@@ -57,9 +57,15 @@ type Store struct {
 // New returns store in two erase blocks of dev starting at off, which must be
 // aligned to erase block. Blocks with no valid store are erased.
 func New(dev Device, off int64) (*Store, error) {
+	if dev.EraseBlockSize() <= 0 || dev.WriteBlockSize() <= 0 {
+		return nil, errors.New("flashstore: invalid block size")
+	}
 	s := &Store{dev: dev, off: off, block: dev.EraseBlockSize(), align: max(dev.WriteBlockSize(), 4)}
-	if off%s.block != 0 {
+	if off < 0 || off%s.block != 0 {
 		return nil, errors.New("flashstore: offset not aligned to erase block")
+	}
+	if s.block <= s.roundUp(headerLen) {
+		return nil, errors.New("flashstore: erase block too small")
 	}
 	found := false
 	for i := range int64(2) {
@@ -181,25 +187,29 @@ func fnv(h uint32, b []byte) uint32 {
 }
 
 // keyAt compares key of record at pos with key.
-func (s *Store) keyAt(pos, keyLen int64, key string) bool {
+func (s *Store) keyAt(pos, keyLen int64, key string) (bool, error) {
 	if keyLen != int64(len(key)) {
-		return false
+		return false, nil
 	}
 	b := s.buf[:keyLen]
 	if _, err := s.dev.ReadAt(b, s.base(s.active)+pos+recordHead); err != nil {
-		return false
+		return false, err
 	}
-	return string(b) == key
+	return string(b) == key, nil
 }
 
 // find returns position of the latest record of key in active block.
-func (s *Store) find(key string) (pos, valLen int64, ok bool) {
+func (s *Store) find(key string) (pos, valLen int64, ok bool, err error) {
 	for p := s.roundUp(headerLen); p < s.end; {
 		k, v, _, err := s.record(s.active, p)
 		if err != nil {
-			return 0, 0, false
+			return 0, 0, false, err
 		}
-		if s.keyAt(p, k, key) {
+		match, err := s.keyAt(p, k, key)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		if match {
 			pos, valLen, ok = p, v, true
 		}
 		p += s.recordLen(k, v)
@@ -211,12 +221,15 @@ func (s *Store) find(key string) (pos, valLen int64, ok bool) {
 func (s *Store) Get(key string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pos, valLen, ok := s.find(key)
+	pos, valLen, ok, err := s.find(key)
+	if err != nil {
+		return nil, err
+	}
 	if !ok {
 		return nil, accessory.ErrNotFound
 	}
 	v := make([]byte, valLen)
-	_, err := s.dev.ReadAt(v, s.base(s.active)+pos+recordHead+int64(len(key)))
+	_, err = s.dev.ReadAt(v, s.base(s.active)+pos+recordHead+int64(len(key)))
 	return v, err
 }
 
@@ -305,7 +318,11 @@ func (s *Store) latest(pos, keyLen, valLen int64, skip string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if s.keyAt(p, k, string(s.buf[MaxKey:MaxKey+keyLen])) {
+		match, err := s.keyAt(p, k, string(s.buf[MaxKey:MaxKey+keyLen]))
+		if err != nil {
+			return false, err
+		}
+		if match {
 			return false, nil
 		}
 		p += s.recordLen(k, v)

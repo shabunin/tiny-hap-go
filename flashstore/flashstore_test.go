@@ -173,57 +173,80 @@ func TestPowerLoss(t *testing.T) {
 			vals = append(vals, fmt.Sprintf("%d:%s", i, bytes.Repeat([]byte{'a' + byte(i%26)}, 200+i%7*100)))
 		}
 		return vals
-	}(40)
-	keys := []string{"pairings", "config", "id"}
-	run := func(d *nor) (map[string]string, int, error) {
-		done := map[string]string{}
-		s, err := New(d, 4096)
-		if err != nil {
-			return done, -1, err
-		}
-		for i, v := range steps {
-			if err := s.Set(keys[i%len(keys)], []byte(v)); err != nil {
-				return done, i, err
-			}
-			done[keys[i%len(keys)]] = v
-		}
-		return done, len(steps), nil
 	}
+	keys := []string{"pairings", "config", "id"}
+	for _, wbs := range []int64{4, 256} {
+		t.Run(fmt.Sprint(wbs), func(t *testing.T) {
+			nSteps := 40
+			step := 7
+			if wbs == 256 {
+				nSteps = 20
+				step = 19
+			}
+			vals := steps(nSteps)
+			run := func(d *nor) (map[string]string, int, error) {
+				done := map[string]string{}
+				s, err := New(d, 4096)
+				if err != nil {
+					return done, -1, err
+				}
+				for i, v := range vals {
+					if err := s.Set(keys[i%len(keys)], []byte(v)); err != nil {
+						return done, i, err
+					}
+					done[keys[i%len(keys)]] = v
+				}
+				return done, len(vals), nil
+			}
 
-	full := newNOR(t, 4, 4)
-	full.budget = 1 << 30
-	run(full)
-	total := 1<<30 - full.budget
-	for cut := 0; cut < total; cut += 7 {
-		d := newNOR(t, 4, 4)
-		d.budget = cut
-		done, step, err := run(d)
-		if !errors.Is(err, errPower) {
-			t.Fatalf("cut %d: %v", cut, err)
-		}
-		d.budget = -1
-		s, err := New(d, 4096)
-		if err != nil {
-			t.Fatalf("cut %d: %v", cut, err)
-		}
-		for _, k := range keys {
-			got, want := get(t, s, k), done[k]
-			if want == "" {
-				want = "<none>"
+			full := newNOR(t, 4, wbs)
+			full.budget = 1 << 30
+			run(full)
+			total := 1<<30 - full.budget
+			for cut := 0; cut < total; cut += step {
+				d := newNOR(t, 4, wbs)
+				d.budget = cut
+				done, failedAt, err := run(d)
+				if !errors.Is(err, errPower) {
+					t.Fatalf("cut %d: %v", cut, err)
+				}
+				d.budget = -1
+				s, err := New(d, 4096)
+				if err != nil {
+					t.Fatalf("cut %d: %v", cut, err)
+				}
+				for _, k := range keys {
+					got, want := get(t, s, k), done[k]
+					if want == "" {
+						want = "<none>"
+					}
+					if got == want {
+						continue
+					}
+					if failedAt >= 0 && k == keys[failedAt%len(keys)] && got == vals[failedAt] {
+						continue
+					}
+					t.Fatalf("cut %d at set %d: %s is %.10q, want %.10q", cut, failedAt, k, got, want)
+				}
+				if err := s.Set("config", []byte("after")); err != nil {
+					t.Fatalf("cut %d: set after power loss: %v", cut, err)
+				}
+				if v := get(t, mount(t, d), "config"); v != "after" {
+					t.Fatalf("cut %d: config %q", cut, v)
+				}
 			}
-			if got == want {
-				continue
-			}
-			if step >= 0 && k == keys[step%len(keys)] && got == steps[step] {
-				continue
-			}
-			t.Fatalf("cut %d at set %d: %s is %.10q, want %.10q", cut, step, k, got, want)
-		}
-		if err := s.Set("config", []byte("after")); err != nil {
-			t.Fatalf("cut %d: set after power loss: %v", cut, err)
-		}
-		if v := get(t, mount(t, d), "config"); v != "after" {
-			t.Fatalf("cut %d: config %q", cut, v)
-		}
+		})
+	}
+}
+
+func TestReadError(t *testing.T) {
+	d := newNOR(t, 4, 4)
+	s := mount(t, d)
+	if err := s.Set("id", []byte("12:34")); err != nil {
+		t.Fatal(err)
+	}
+	d.budget = 0
+	if _, err := s.Get("id"); !errors.Is(err, errPower) {
+		t.Fatalf("got %v, want errPower", err)
 	}
 }
