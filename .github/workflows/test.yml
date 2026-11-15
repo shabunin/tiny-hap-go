@@ -49,7 +49,7 @@ jobs:
           go-version-file: go.mod
       - uses: acifani/setup-tinygo@v3
         with:
-          tinygo-version: '0.42.0'
+          tinygo-version: '0.44.0'
           install-binaryen: 'false'
       - name: build accessory example
         run: tinygo build -size short -o /dev/null -target=${{ matrix.target }} ./examples/tinylamp
