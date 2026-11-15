@@ -155,3 +155,59 @@ func TestMalformed(t *testing.T) {
 		}
 	}
 }
+
+func TestZeroAllocDemux(t *testing.T) {
+	r := newResponder(t)
+	r.announce = 0
+	m := new(dns.Msg)
+	m.Question = []dns.Question{{Name: `Tiny\ Lamp._hap._tcp.local.`, Qtype: dns.TypeSRV, Qclass: dns.ClassINET}}
+	b, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkt := append(make([]byte, udpOffset), b...)
+	if n := testing.AllocsPerRun(50, func() {
+		if err := r.Demux(pkt, udpOffset); err != nil {
+			t.Fatal(err)
+		}
+	}); n != 0 {
+		t.Fatalf("Demux allocated %g times, want 0", n)
+	}
+}
+
+func TestOversizedAndValidation(t *testing.T) {
+	r := newResponder(t)
+	if err := r.Advertise("Lamp", 0, nil); err == nil {
+		t.Fatal("port 0 accepted")
+	}
+	if err := r.Advertise("Lamp", 70000, nil); err == nil {
+		t.Fatal("port > 65535 accepted")
+	}
+
+	// Non-query opcode (e.g. Update=5) is ignored.
+	r.announce = 0
+	m := new(dns.Msg)
+	m.Opcode = dns.OpcodeUpdate
+	m.Question = []dns.Question{{Name: "_hap._tcp.local.", Qtype: dns.TypePTR, Qclass: dns.ClassINET}}
+	b, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Demux(b, 0); err != nil {
+		t.Fatal(err)
+	}
+	if r.answer {
+		t.Fatal("non-query opcode answered")
+	}
+
+	// Oversized response clears pending flags rather than retrying every tick.
+	r.answer = true
+	r.announce = 2
+	small := make([]byte, udpOffset+16)
+	if n, err := r.Encapsulate(small, ipOffset, udpOffset); err != nil || n != 0 {
+		t.Fatalf("oversized Encapsulate returned (%d, %v)", n, err)
+	}
+	if r.answer || r.announce != 0 {
+		t.Fatalf("oversized response left pending flags: answer=%v announce=%d", r.answer, r.announce)
+	}
+}

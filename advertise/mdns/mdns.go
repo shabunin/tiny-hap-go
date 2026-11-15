@@ -15,7 +15,6 @@ package mdns
 import (
 	"errors"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +71,9 @@ func (r *Responder) Advertise(name string, port int, txt map[string]string) erro
 	if name == "" || len(name) > 63 || len(r.host) == 0 || len(r.host) > 63 {
 		return errors.New("mdns: name and host name must have 1 to 63 bytes")
 	}
+	if port <= 0 || port > 65535 {
+		return errors.New("mdns: port out of range")
+	}
 	b, err := encodeTXT(txt)
 	if err != nil {
 		return err
@@ -116,9 +118,12 @@ func (r *Responder) ConnectionID() *atomic.Uint32 { return &r.connID }
 
 // Demux reads mDNS message at carrierData[frameOffset:] and answers questions about accessory.
 func (r *Responder) Demux(carrierData []byte, frameOffset int) error {
+	if frameOffset < 0 || frameOffset > len(carrierData) {
+		return nil
+	}
 	msg := carrierData[frameOffset:]
-	if len(msg) < 12 || msg[2]&0x80 != 0 {
-		return nil // not a query
+	if len(msg) < 12 || msg[2]&0x80 != 0 || msg[2]&0x78 != 0 {
+		return nil // not a standard query
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -127,13 +132,13 @@ func (r *Responder) Demux(carrierData []byte, frameOffset int) error {
 	}
 	off := 12
 	for range int(msg[4])<<8 | int(msg[5]) {
-		labels, end, ok := readName(msg, off)
+		spans, count, end, ok := readName(msg, off)
 		if !ok || end+4 > len(msg) {
 			return nil
 		}
 		typ := int(msg[end])<<8 | int(msg[end+1])
 		off = end + 4
-		if r.matches(labels, typ) {
+		if r.matches(msg, spans, count, typ) {
 			r.answer = true
 		}
 	}
@@ -141,10 +146,10 @@ func (r *Responder) Demux(carrierData []byte, frameOffset int) error {
 }
 
 // matches tells if question is about service type, accessory or its host.
-func (r *Responder) matches(labels []string, typ int) bool {
-	service := equal(labels, serviceType)
-	instance := len(labels) == 4 && strings.EqualFold(labels[0], r.name) && equal(labels[1:], serviceType)
-	host := equal(labels, []string{r.host, "local"})
+func (r *Responder) matches(msg []byte, spans [4][2]int, count, typ int) bool {
+	service := count == 3 && equalLabels(msg, spans[:3], serviceType)
+	instance := count == 4 && equalFoldASCII(msg[spans[0][0]:spans[0][1]], r.name) && equalLabels(msg, spans[1:4], serviceType)
+	host := count == 2 && equalFoldASCII(msg[spans[0][0]:spans[0][1]], r.host) && equalFoldASCII(msg[spans[1][0]:spans[1][1]], "local")
 	switch typ {
 	case typePTR:
 		return service
@@ -158,17 +163,47 @@ func (r *Responder) matches(labels []string, typ int) bool {
 	return false
 }
 
-func equal(a, b []string) bool {
-	return slices.EqualFunc(a, b, strings.EqualFold)
+func equalLabels(msg []byte, spans [][2]int, target []string) bool {
+	if len(spans) != len(target) {
+		return false
+	}
+	for i, sp := range spans {
+		if !equalFoldASCII(msg[sp[0]:sp[1]], target[i]) {
+			return false
+		}
+	}
+	return true
 }
 
-// readName reads name at off, following compression pointers.
-// It returns labels and offset after the name where it started.
-func readName(msg []byte, off int) (labels []string, end int, ok bool) {
+func equalFoldASCII(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	for i, c := range b {
+		d := s[i]
+		if c == d {
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if d >= 'A' && d <= 'Z' {
+			d += 'a' - 'A'
+		}
+		if c != d {
+			return false
+		}
+	}
+	return true
+}
+
+// readName walks name at off, following compression pointers.
+// It returns up to 4 label spans, total label count, and offset after the name where it started.
+func readName(msg []byte, off int) (spans [4][2]int, count, end int, ok bool) {
 	end = -1
 	for jumps := 0; ; {
 		if off >= len(msg) {
-			return nil, 0, false
+			return spans, 0, 0, false
 		}
 		n := int(msg[off])
 		switch {
@@ -176,10 +211,10 @@ func readName(msg []byte, off int) (labels []string, end int, ok bool) {
 			if end < 0 {
 				end = off + 1
 			}
-			return labels, end, true
+			return spans, count, end, true
 		case n&0xC0 == 0xC0:
 			if off+1 >= len(msg) || jumps > 10 {
-				return nil, 0, false
+				return spans, 0, 0, false
 			}
 			if end < 0 {
 				end = off + 2
@@ -187,12 +222,15 @@ func readName(msg []byte, off int) (labels []string, end int, ok bool) {
 			off = (n&0x3F)<<8 | int(msg[off+1])
 			jumps++
 		case n&0xC0 != 0:
-			return nil, 0, false
+			return spans, 0, 0, false
 		default:
 			if off+1+n > len(msg) {
-				return nil, 0, false
+				return spans, 0, 0, false
 			}
-			labels = append(labels, string(msg[off+1:off+1+n]))
+			if count < len(spans) {
+				spans[count] = [2]int{off + 1, off + 1 + n}
+			}
+			count++
 			off += 1 + n
 		}
 	}
@@ -201,6 +239,9 @@ func readName(msg []byte, off int) (labels []string, end int, ok bool) {
 // Encapsulate writes answer or announcement into carrierData[offsetToFrame:]
 // if one is due. Stack sends it to the group.
 func (r *Responder) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame int) (int, error) {
+	if offsetToFrame < 0 || offsetToFrame > len(carrierData) {
+		return 0, nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.name == "" || !r.answer && r.announce == 0 {
@@ -210,9 +251,13 @@ func (r *Responder) Encapsulate(carrierData []byte, offsetToIP, offsetToFrame in
 	if now.Sub(r.sent) < minInterval {
 		return 0, nil
 	}
-	msg := r.appendResponse(carrierData[offsetToFrame:offsetToFrame])
-	if len(msg) > len(carrierData)-offsetToFrame {
-		return 0, nil // carrierData is too short, message was allocated elsewhere
+	avail := len(carrierData) - offsetToFrame
+	msg := r.appendResponse(carrierData[offsetToFrame:offsetToFrame:len(carrierData)])
+	if len(msg) > avail {
+		// Drop oversized response so subsequent ticks do not spin allocating it.
+		r.answer = false
+		r.announce = 0
+		return 0, nil
 	}
 	if r.announce > 0 {
 		r.announce--
