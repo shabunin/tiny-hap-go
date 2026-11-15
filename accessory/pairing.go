@@ -281,6 +281,8 @@ func (c *conn) pairSetupM5(items tlv.Items) *response {
 		logf("saving pairing: %v", err)
 		return tlvError(6, tlv.ErrUnknown)
 	}
+	// Paired from now on, even if M6 does not reach the controller.
+	s.advertise()
 
 	accX := hapcrypto.HKDF(setup.key, "Pair-Setup-Accessory-Sign-Salt", "Pair-Setup-Accessory-Sign-Info")
 	info = append(append(accX[:], s.id...), s.ltpk...)
@@ -292,12 +294,7 @@ func (c *conn) pairSetupM5(items tlv.Items) *response {
 	var w tlv.Writer
 	w.Byte(tlv.State, 6)
 	w.Bytes(tlv.EncryptedData, hapcrypto.Seal(nil, encKey, []byte("PS-Msg06"), sw.Data(), nil))
-	res := tlvResponse(w.Data())
-	res.after = func() bool {
-		s.advertise()
-		return true
-	}
-	return res
+	return tlvResponse(w.Data())
 }
 
 // pairVerify is state of pair-verify between M1 and M3.
@@ -493,6 +490,8 @@ func (c *conn) pairings(body []byte) *response {
 		}
 		s.pairings = next
 		s.mu.Unlock()
+		// Unpaired from now on, even if the response does not reach the controller.
+		s.advertise()
 
 		// Close other removed connections now so they cannot send requests
 		// before the remove response finishes writing.
@@ -509,10 +508,7 @@ func (c *conn) pairings(body []byte) *response {
 		var w tlv.Writer
 		w.Byte(tlv.State, 2)
 		res := tlvResponse(w.Data())
-		res.after = func() bool {
-			s.advertise()
-			return !own
-		}
+		res.after = func() bool { return !own }
 		return res
 
 	case 5: // list
